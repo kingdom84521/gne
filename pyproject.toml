@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gne"
+version = "2.0.0"
+description = "Git note editor：掛在 commit 上的 release note，欄位由宣告檔驅動"
+requires-python = ">=3.12"
+dependencies = [
+  "pyyaml==6.0.3",
+  "openpyxl==3.1.5",
+  "pydantic>=2.0.0",
+  "jsonschema==4.26.0",
+  "textual==8.2.8",
+]
+
+[project.scripts]
+gne = "gne.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+static = ["import-linter==2.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gne"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+# 分層由這裡把關，不是靠資料夾名字。跑 lint-imports 檢查。
+[tool.importlinter]
+root_packages = ["gne"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "介面往下叫核心，核心不回頭"
+type = "layers"
+layers = ["gne.cli", "gne.tui", "gne.advisor | gne.render | gne.export", "gne.core"]
+
+[[tool.importlinter.contracts]]
+name = "核心不認識終端機，也不認識命令列"
+type = "forbidden"
+source_modules = ["gne.core"]
+forbidden_modules = ["textual", "argparse", "openpyxl"]

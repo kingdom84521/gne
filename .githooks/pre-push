@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# 未經人工確認的 release note 不上 origin。
+#
+# gne 在備註裡放一個 ai_generated 欄位記下「這幾個欄位是 AI 填的」，人工看過並收下
+# 就會把它拿掉（gne --ai-generated 逐筆看）。記號還在就代表沒人看過，這裡不讓它出去。
+#
+# 這是最後一道防線而非唯一一道：gne push 自己會先擋下來並講清楚剩幾筆，AI 寫入
+# 也一律不自動推送。這一支刻意只用 git，不進容器也不碰 Python——git push 不該
+# 因為容器沒開就推不動。
+#
+# refs/notes 只有一個 ref，一次推送就把本機所有備註送上去，所以判斷的對象是整棵
+# 被推的 notes tree，不只是這次新增的那幾筆。
+
+marker=ai_generated
+empty_sha=0000000000000000000000000000000000000000
+listing_limit=10
+status=0
+
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  [[ "$remote_ref" == refs/notes/* ]] || continue
+  [[ "$local_sha" == "$empty_sha" ]] && continue
+
+  # git grep 直接掃 tree 物件，1700 筆備註只花毫秒。路徑就是被標註的 commit，
+  # 備註多時 git 會拆成 fan-out 目錄，去掉斜線才是完整 sha。
+  mapfile -t waiting < <(
+    git grep -l -e "^${marker}:" "$local_sha" 2>/dev/null |
+      sed -e "s|^${local_sha}:||" -e 's|/||g'
+  )
+  ((${#waiting[@]} == 0)) && continue
+
+  status=1
+  printf 'pre-push：%s 有 %d 筆備註還沒有人工確認，不能推上 origin。\n' \
+    "$remote_ref" "${#waiting[@]}" >&2
+  for revision in "${waiting[@]:0:$listing_limit}"; do
+    subject=$(git log -1 --format=%s "$revision" 2>/dev/null) ||
+      subject='（這個 commit 不在本地 repository）'
+    printf '  %s  %s\n' "${revision:0:10}" "$subject" >&2
+  done
+  if ((${#waiting[@]} > listing_limit)); then
+    printf '  …其餘 %d 筆\n' "$((${#waiting[@]} - listing_limit))" >&2
+  fi
+done
+
+if ((status != 0)); then
+  printf '用 gne --ai-generated 逐筆看過並收下（ctrl+s 收下、s 寫入），再重新推送。\n' >&2
+  printf 'pre-push：確認要略過請加 --no-verify。\n' >&2
+fi
+
+exit $status

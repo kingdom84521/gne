@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/kingdom84521/gne/master/src/gne/core/note-schema.json",
+  "title": "git note",
+  "description": "掛在 commit 上的 release note 欄位定義。這份宣告是欄位的唯一來源：驗證規則、TUI 選單、CLI 旗標、純文字與 JSON 輸出、xlsx 表頭全部由它衍生，增修欄位只需要改這個檔案。properties 的出現順序即顯示順序。每個欄位的 x-prompt 是填寫指示，人與 AI 讀的是同一份；x-ignore-when 說的是「其他欄位變成什麼值時，這一欄就不必問了」；x-follow-convention 說的是「commit 標題的前綴對得上可選值時就用它」。這一份是隨套件出貨的範例宣告，換成自己專案的欄位就是改這個檔。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type"
+  ],
+  "properties": {
+    "type": {
+      "title": "變更種類",
+      "x-prompt": "這筆變更在 release note 裡的分類。commit message 的 convention 前綴（feat:、fix:）只是線索，當初可能標錯，要一併看實際的 code change 才能定案。\n\nskip 是預設答案，代表知道有這筆 commit、但它不進 release note；重構、測試、建置設定、內部整理都填 skip。只有這次變更是使用者看得到、感覺得到的，才改填別的分類。\n\n不是 skip 時，依變更本身的性質選：新增或調整使用者看得到的功能填 feat，修正既有行為的錯誤填 fix，修補安全性問題填 security。",
+      "type": "string",
+      "enum": [
+        "feat",
+        "fix",
+        "security",
+        "skip"
+      ],
+      "x-input": "choice",
+      "x-choice-labels": {
+        "feat": "功能",
+        "fix": "錯誤",
+        "security": "安全性",
+        "skip": "略過"
+      },
+      "x-follow-convention": true
+    },
+    "change_log": {
+      "title": "變更說明",
+      "x-prompt": "release note 讀者看到的變更描述。\n\n這筆變更在規格或需求文件上有對應的頁面時，填那一頁的連結，讓讀者能一路讀下去；有短連結就用短連結。\n\n對應得到 issue 編號時這一欄留空，編號填進 redmine_ids 就夠了，不必兩邊各寫一次。\n\n兩者都沒有時，填一句簡短的敘述，講這次變更對使用者的影響，不要照抄 commit message。同一份 release note 不要兩種語言並存，照既有備註的語言寫。",
+      "type": "string",
+      "x-input": "multiline",
+      "x-ignore-when": {
+        "type": "skip"
+      }
+    },
+    "redmine_ids": {
+      "title": "識別碼",
+      "x-prompt": "這筆變更對應的 issue 編號。找得到對應的 issue（通常是 fix）就把編號填進來，一筆變更對到多張單就填多筆。找不到就留空，不要填猜的編號。",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-input": "integer-list",
+      "x-item-url": "https://redmine.example.com/issues/{value}",
+      "x-ignore-when": {
+        "type": "skip"
+      }
+    },
+    "spec_change": {
+      "title": "規格變更",
+      "x-prompt": "這筆變更是否牽動既有規格，牽動了什麼。由人工判斷並填寫：算不算規格變更取決於對外承諾過什麼，commit 與 code change 裡看不出來。",
+      "type": "string",
+      "x-input": "multiline",
+      "x-human-only": true,
+      "x-ignore-when": {
+        "type": "skip"
+      }
+    },
+    "data_migration": {
+      "title": "資料搬遷",
+      "x-prompt": "這筆變更是否需要資料搬遷，搬遷什麼。由人工判斷並填寫：要不要搬遷取決於既有部署裡有什麼資料，commit 與 code change 裡看不出來。",
+      "type": "string",
+      "x-input": "multiline",
+      "x-human-only": true,
+      "x-ignore-when": {
+        "type": "skip"
+      }
+    }
+  }
+}

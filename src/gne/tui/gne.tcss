@@ -1,0 +1,249 @@
+#body {
+    height: 1fr;
+}
+
+/* 寬度由 GneApp.on_mount 依 CommitList.required_width 設定。
+   分隔線用 OptionList 自帶的邊框，不另外再畫一條。 */
+#commit-pane {
+    height: 100%;
+}
+
+#commits {
+    width: 100%;
+    height: 100%;
+}
+
+#pane {
+    width: 1fr;
+    height: 100%;
+    padding: 0 1;
+}
+
+#commit-subject {
+    height: auto;
+    color: $text-accent;
+    text-style: bold;
+    padding-bottom: 1;
+    border-bottom: solid $panel;
+}
+
+#preview {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+/* 一開始就藏起來，否則初始焦點會落在看不見的問答上 */
+#prompt {
+    display: none;
+    height: 1fr;
+}
+
+/* 答過的往上堆、當前那一題永遠貼在最底下——打字的位置固定，不必捲動去找。 */
+#prompt-log {
+    height: 1fr;
+    overflow-y: auto;
+    align-vertical: bottom;
+    /* 與問句同一條左邊界：答過的與正在問的要對齊，中間不能差一格。 */
+    padding: 0 1;
+}
+
+/* 問句與回答是同一塊：填滿寬度的淡色長方形，游標永遠在它裡面。 */
+#prompt-question {
+    width: 100%;
+    height: auto;
+    padding: 1 1 0 1;
+    background: $boost;
+    color: $text-accent;
+    text-style: bold;
+}
+
+#prompt-input {
+    width: 100%;
+    border: none;
+    padding: 0 1 1 1;
+    background: $boost;
+}
+
+#prompt-input:focus {
+    background: $boost;
+}
+
+/* 可選值排成一排，最多四個換一行。RadioSet 自己的上下左右都能移動。 */
+#prompt-choices {
+    width: 100%;
+    height: auto;
+    padding: 0 0 1 0;
+    background: $boost;
+}
+
+#prompt-choices ChoiceRow {
+    layout: grid;
+    grid-size: 4;
+    grid-rows: 1;
+    grid-columns: auto;
+    grid-gutter: 0 2;
+    height: auto;
+    width: 100%;
+    border: none;
+    padding: 0 1;
+}
+
+#status {
+    height: 1;
+    background: $panel;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* 兩段式按鍵按了第一次時蓋在快捷鍵列上的那一條。底色要一眼看得到——下一次按鍵就會
+   丟掉東西——但那是提醒，不是錯誤，所以用 warning 而不是 error。 */
+#key-hint {
+    display: none;
+    height: 1;
+    background: $warning;
+    color: auto;
+    text-style: bold;
+    padding: 0 1;
+}
+
+/* 對話框：背景壓暗沿用 ModalScreen 的預設底色，這裡只管盒子本身。 */
+ConfirmScreen, CommitInfoScreen, ShortcutsScreen, SuggestionScreen {
+    align: center middle;
+}
+
+.dialog-box {
+    width: auto;
+    max-width: 76;
+    height: auto;
+    padding: 1 2;
+    border: thick $primary;
+    background: $surface;
+}
+
+.dialog-title {
+    width: auto;
+    color: $text-accent;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.dialog-hint {
+    width: auto;
+    color: $text-muted;
+    padding-top: 1;
+}
+
+.info-row {
+    width: auto;
+    height: auto;
+}
+
+.info-label {
+    width: 18;
+    color: $text-muted;
+}
+
+.info-value {
+    width: auto;
+}
+
+#confirm-box {
+    width: 60;
+}
+
+/* commit 資訊底下接的是 git show：diff 要讀得下去就得夠寬，也得捲得動。
+   固定佔畫面的九成——這個對話框永遠有內容，大小不該隨 commit 大小跳。 */
+#commit-info {
+    width: 90%;
+    max-width: 100%;
+    height: 90%;
+}
+
+#commit-info-scroll {
+    height: 1fr;
+    margin-top: 1;
+    border-top: solid $panel;
+    padding-top: 1;
+}
+
+/* 快捷鍵一覽：盒子高度固定成畫面的九成，清單自己在裡面捲。
+   盒子若是 auto，清單比終端機高的時候撐破的是螢幕，捲的就變成整個對話框。 */
+#shortcuts {
+    width: auto;
+    max-width: 90%;
+    height: 90%;
+}
+
+#shortcuts .dialog-title {
+    padding-bottom: 0;
+}
+
+/* width: auto 讓盒子縮到清單那麼寬——捲動容器預設會撐滿，那會把盒子拉到 max-width。 */
+#shortcuts-scroll {
+    width: auto;
+    height: 1fr;
+}
+
+/* 按了也做不了事的那一行整行變暗，原因寫在後面。 */
+#shortcuts .unavailable Label {
+    color: $text-disabled;
+}
+
+.shortcut-note {
+    width: auto;
+    margin-left: 2;
+}
+
+.section-title {
+    width: auto;
+    color: $text-accent;
+    text-style: bold;
+    padding-top: 1;
+}
+
+/* 建議可能很長：盒子固定寬、內容自己捲，動作列永遠看得到。 */
+#suggestion-box {
+    width: 92;
+    max-width: 96;
+}
+
+#suggestion-heading {
+    width: 100%;
+    color: $text-accent;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#suggestion-scroll {
+    height: auto;
+    max-height: 20;
+}
+
+#suggestion-actions {
+    height: auto;
+    align-horizontal: center;
+    padding-top: 1;
+}
+
+#confirm-actions {
+    height: auto;
+    align-horizontal: center;
+    padding-top: 1;
+}
+
+CommitDetailScreen {
+    layout: vertical;
+    align: left top;
+    background: $surface;
+}
+
+#detail-heading {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#detail-tabs {
+    height: 1fr;
+}
