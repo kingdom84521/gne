@@ -167,6 +167,12 @@ gne list --format json  # 不進畫面，把資料倒出來
 - `x-choice-labels`：`choice` 欄位的中文標籤。
 - `x-item-url`：`integer-list` 每一項要展開成的網址。
 - `x-human-only`：這個欄位只能由人填。AI 寫入時碰到它會被擋下來，不是靠 `x-prompt` 拜託。
+- `x-ignore-when`：別的欄位變成什麼值時，這一欄就不必問了。
+- `x-follow-convention`：commit 前綴對得上可選值時就用它（只有 `choice` 欄位用得上）。
+
+`Ctrl+F` 的表單收得下上面每一個關鍵字：成對的東西（可選值對標籤、欄位對值）寫成
+`feat=功能, fix=錯誤` 與 `type=skip`，一格搞定。所以**畫面上做得到的事不比改檔案少**——
+`tests/test_tui_settings.py` 拿隨附的範本逐欄對過去，表單少收一個關鍵字那一條就會紅。
 
 ## AI 建議
 

@@ -14,7 +14,7 @@ from gne.core.entity import NoteController
 from gne.tui.app import GneApp
 from gne.tui.screens import DefaultNoteScreen, FieldsScreen, RangeScreen
 from gne.tui.screens.confirm import ConfirmScreen
-from gne.tui.screens.fields import FieldFormScreen
+from gne.tui.screens.fields import FieldFormScreen, draft_of
 
 from conftest import run_git
 
@@ -224,3 +224,100 @@ async def test_dropping_a_field_rewrites_the_notes_that_carry_it(
 
     assert "change_log" not in json.loads(declared_in_repo.read_text(encoding="utf-8"))["properties"]
     assert controller.all_notes()[head] == {"type": "fix"}
+
+
+# --- 表單能表達的東西，不能少於宣告檔 ---
+
+
+@pytest.mark.parametrize("key", list(json.loads(schema.TEMPLATE_PATH.read_text("utf-8"))["properties"]))
+def test_every_field_in_the_template_round_trips_through_the_form(key):
+    """範本裡的每一欄都要能被表單讀進來、再原樣寫回去。
+
+    這一條就是「UI 能做到宣告檔能做的全部」的機械式說法：表單少收一個關鍵字，
+    帶著那個關鍵字的欄位就對不回去，這裡會紅。
+    """
+    document = json.loads(schema.TEMPLATE_PATH.read_text(encoding="utf-8"))
+    declaration = document["properties"][key]
+
+    draft = draft_of(key, declaration, key in document.get("required", []))
+
+    assert draft.as_declaration() == declaration
+
+
+async def test_choice_labels_and_conditions_are_written_from_the_form(
+    controller, git_repo, commit, declared_in_repo
+):
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        app.screen.query_one("#field-form-key", Input).value = "impact"
+        app.screen.query_one("#field-form-title", Input).value = "影響"
+        app.screen.query_one("#field-form-prompt", Input).value = "影響有多大。"
+        app.screen.query_one("#field-form-input", Input).value = "choice"
+        app.screen.query_one("#field-form-choices", Input).value = "big=很大, small=不大"
+        app.screen.query_one("#field-form-ignore_when", Input).value = "type=skip"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("ctrl+s")
+        await settle(app, pilot)
+
+    written = json.loads(declared_in_repo.read_text(encoding="utf-8"))["properties"]["impact"]
+    assert written["enum"] == ["big", "small"]
+    assert written["x-choice-labels"] == {"big": "很大", "small": "不大"}
+    assert written["x-ignore-when"] == {"type": "skip"}
+
+
+async def test_a_condition_written_without_a_value_is_refused(
+    controller, git_repo, commit, declared_in_repo
+):
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        app.screen.query_one("#field-form-key", Input).value = "impact"
+        app.screen.query_one("#field-form-prompt", Input).value = "影響有多大。"
+        app.screen.query_one("#field-form-ignore_when", Input).value = "type"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert isinstance(app.screen, FieldFormScreen), "留在表單上"
+
+
+async def test_a_condition_naming_a_field_that_does_not_exist_is_refused(
+    controller, git_repo, commit, declared_in_repo
+):
+    """宣告檔本來就擋這件事，所以畫面上按儲存時擋得住，不會寫出壞掉的宣告。"""
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+
+        app.screen.query_one("#field-form-key", Input).value = "impact"
+        app.screen.query_one("#field-form-prompt", Input).value = "影響有多大。"
+        app.screen.query_one("#field-form-ignore_when", Input).value = "沒有這一欄=x"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert isinstance(app.screen, FieldsScreen), "留在欄位一覽上"

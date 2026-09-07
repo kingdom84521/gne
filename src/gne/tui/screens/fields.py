@@ -8,7 +8,7 @@ x-ignore-when 是什麼。對只設定一次的專案來說那是一次性的成
 而是一份計畫——新宣告加上「既有備註要跟著做什麼」，由呼叫端一起執行。
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
@@ -46,16 +46,25 @@ class FieldPlan:
 
 @dataclass
 class FieldDraft:
-    """表單收到的一個欄位。key 之外的東西都可以空著再補。"""
+    """表單收到的一個欄位。
+
+    可選值與「什麼時候不問」都是成對的東西（值對標籤、欄位對值），表單裡各佔一格，
+    寫成 `feat=功能, fix=錯誤`——一個 choice 欄位有幾個可選值不固定，做成幾格輸入
+    就得在打字中途重畫表單。
+    """
 
     key: str
     title: str
     prompt: str
     input: str
-    choices: tuple[str, ...] = ()
+    choices: tuple[tuple[str, str], ...] = ()
+    """(可選值, 顯示名稱)。"""
     item_url: str = ""
+    ignore_when: tuple[tuple[str, str], ...] = ()
+    """(別的欄位, 那個欄位的值)。成立時這一欄就不問。"""
     required: bool = False
     human_only: bool = False
+    follow_convention: bool = False
     original_key: str | None = None
 
     def as_declaration(self) -> dict[str, Any]:
@@ -70,27 +79,65 @@ class FieldDraft:
         else:
             declaration["type"] = "string"
         if self.choices:
-            declaration["enum"] = list(self.choices)
-            declaration["x-choice-labels"] = {choice: choice for choice in self.choices}
+            declaration["enum"] = [value for value, _ in self.choices]
+            declaration["x-choice-labels"] = {value: label for value, label in self.choices}
         if self.item_url:
             declaration["x-item-url"] = self.item_url
+        if self.ignore_when:
+            declaration["x-ignore-when"] = dict(self.ignore_when)
         if self.human_only:
             declaration["x-human-only"] = True
+        if self.follow_convention:
+            declaration["x-follow-convention"] = True
         return declaration
 
 
 def draft_of(key: str, declaration: Mapping[str, Any], required: bool) -> FieldDraft:
+    labels = declaration.get("x-choice-labels", {})
     return FieldDraft(
         key=key,
         title=declaration.get("title", key),
         prompt=declaration.get("x-prompt", ""),
         input=declaration.get("x-input", "text"),
-        choices=tuple(declaration.get("enum", ())),
+        choices=tuple(
+            (value, labels.get(value, value)) for value in declaration.get("enum", ())
+        ),
         item_url=declaration.get("x-item-url", ""),
+        ignore_when=tuple(
+            (name, str(value)) for name, value in declaration.get("x-ignore-when", {}).items()
+        ),
         required=required,
         human_only=bool(declaration.get("x-human-only", False)),
+        follow_convention=bool(declaration.get("x-follow-convention", False)),
         original_key=key,
     )
+
+
+def spell_pairs(pairs: Iterable[tuple[str, str]]) -> str:
+    return ", ".join(f"{left}={right}" for left, right in pairs)
+
+
+def read_pairs(raw: str, *, label_optional: bool) -> tuple[tuple[str, str], ...]:
+    """`a=1, b=2` 讀成成對的東西。
+
+    label_optional 是給可選值用的：只寫 `feat` 就以值本身當顯示名稱，因為英文專案
+    的標籤本來就等於值，不該逼人多打一次。
+    """
+    collected: list[tuple[str, str]] = []
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        left, separator, right = piece.partition("=")
+        left, right = left.strip(), right.strip()
+        if not left:
+            raise ValueError(f"「{piece}」左邊是空的。")
+        if not separator or not right:
+            if not label_optional:
+                raise ValueError(f"「{piece}」要寫成 欄位=值。")
+            right = left
+        collected.append((left, right))
+    return tuple(collected)
 
 
 class FieldFormScreen(Dialog[FieldDraft | None]):
@@ -106,8 +153,15 @@ class FieldFormScreen(Dialog[FieldDraft | None]):
         ("title", "標題（畫面上顯示的名字）"),
         ("prompt", "填寫指示（人與 AI 讀的是同一份）"),
         ("input", f"輸入型別（{' / '.join(INPUT_KINDS)}）"),
-        ("choices", "可選值（choice 才有，以逗號分隔）"),
+        ("choices", "可選值（choice 才有）：feat=功能, fix=錯誤"),
         ("item_url", "每項網址（integer-list 才有，用 {value} 代入）"),
+        ("ignore_when", "什麼時候不問這一欄：type=skip"),
+    )
+
+    SWITCHES = (
+        ("required", "必填"),
+        ("human_only", "只能由人填（AI 寫不進去）"),
+        ("follow_convention", "commit 前綴對得上可選值時就用它（choice 才有）"),
     )
 
     def __init__(self, draft: FieldDraft | None = None) -> None:
@@ -121,16 +175,15 @@ class FieldFormScreen(Dialog[FieldDraft | None]):
                 for name, label in self.ROWS:
                     yield Label(label, classes="field-form-label")
                     yield Input(value=self._value_of(name), id=f"field-form-{name}")
-                yield Label("必填", classes="field-form-label")
-                yield Switch(value=self._draft.required, id="field-form-required")
-                yield Label("只能由人填（AI 寫不進去）", classes="field-form-label")
-                yield Switch(value=self._draft.human_only, id="field-form-human-only")
+                for name, label in self.SWITCHES:
+                    yield Label(label, classes="field-form-label")
+                    yield Switch(value=getattr(self._draft, name), id=f"field-form-{name}")
             yield Label("", id="field-form-error", classes="dialog-error")
             yield Label(FORM_HINT, classes="dialog-hint")
 
     def _value_of(self, name: str) -> str:
-        if name == "choices":
-            return ", ".join(self._draft.choices)
+        if name in ("choices", "ignore_when"):
+            return spell_pairs(getattr(self._draft, name))
         return str(getattr(self._draft, name))
 
     def on_mount(self) -> None:
@@ -145,21 +198,31 @@ class FieldFormScreen(Dialog[FieldDraft | None]):
             self.query_one("#field-form-error", Label).update(problem)
             return
 
+        try:
+            choices = read_pairs(collected["choices"], label_optional=True)
+            ignore_when = read_pairs(collected["ignore_when"], label_optional=False)
+        except ValueError as error:
+            self.query_one("#field-form-error", Label).update(str(error))
+            return
+
         self.dismiss(
             FieldDraft(
                 key=collected["key"],
                 title=collected["title"],
                 prompt=collected["prompt"],
                 input=collected["input"],
-                choices=tuple(
-                    piece.strip() for piece in collected["choices"].split(",") if piece.strip()
-                ),
+                choices=choices,
                 item_url=collected["item_url"],
-                required=self.query_one("#field-form-required", Switch).value,
-                human_only=self.query_one("#field-form-human-only", Switch).value,
+                ignore_when=ignore_when,
+                required=self._switch("required"),
+                human_only=self._switch("human_only"),
+                follow_convention=self._switch("follow_convention"),
                 original_key=self._draft.original_key,
             )
         )
+
+    def _switch(self, name: str) -> bool:
+        return self.query_one(f"#field-form-{name}", Switch).value
 
     def _problem_with(self, collected: Mapping[str, str]) -> str:
         """宣告檔擋得住的錯就讓宣告檔擋，這裡只擋它擋不住的。"""
@@ -173,6 +236,8 @@ class FieldFormScreen(Dialog[FieldDraft | None]):
             return "choice 欄位要給可選值。"
         if collected["item_url"] and collected["input"] != "integer-list":
             return "每項網址只有 integer-list 欄位用得上。"
+        if self._switch("follow_convention") and collected["input"] != "choice":
+            return "「前綴對得上就用它」只有 choice 欄位用得上——要對上的正是那組可選值。"
         return ""
 
     def action_close(self) -> None:
