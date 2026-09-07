@@ -43,3 +43,15 @@ def default_note() -> dict[str, Any]:
     # 部分驗證：預設值是起點，沒有義務把必填欄位填好。
     schema.validate_partial(fields)
     return dict(fields)
+
+
+def save_default_note(document: dict[str, Any]) -> Path:
+    """寫回 .gne/default-note。起點也要符合宣告，錯的預設值不該存進去。"""
+    fields = provenance.fields_of(document)
+    schema.validate_partial(fields)
+
+    path = default_note_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = yaml.safe_dump(dict(fields), allow_unicode=True, sort_keys=False)
+    path.write_text(body, encoding="utf-8")
+    return path

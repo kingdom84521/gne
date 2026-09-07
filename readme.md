@@ -96,6 +96,9 @@ gne list --format json  # 不進畫面，把資料倒出來
 | 兩者 | `Ctrl+C` `Ctrl+C` | 不儲存直接離開（連按兩次） |
 | 兩者 | `Ctrl+Shift+Q` | 離開（還有暫存時先問） |
 | 兩者 | `Ctrl+Shift+W` | 強制關閉（只有分得出這顆鍵的終端機） |
+| 兩者 | `Ctrl+R` | 改看哪一段 |
+| 兩者 | `Ctrl+D` | 改新備註的起點 |
+| 兩者 | `Ctrl+F` | 改欄位宣告 |
 
 列表左側的記號：`[*]` 已編輯待儲存、`[✓]` 已寫入、`[?]` 由 AI 產生待人工確認、`[ ]` 尚未填寫。
 
@@ -130,19 +133,24 @@ gne list --format json  # 不進畫面，把資料倒出來
 | `gne remove [<commit>]` | 刪除備註 |
 | `gne prune [--apply --yes]` | 移除每個欄位都空的備註 |
 | `gne backup [-o <path>]` | 傾印所有帶內容的備註 |
-| `gne push` | 把本機的 refs/notes 推到 origin |
+| `gne push` | 把本機的 refs/notes 推到 remote |
 
-全域 `--no-push` 讓異動不推送到 origin，批次填寫時建議加上，收尾再 `gne push` 推一次。
+全域 `--no-push` 讓異動不推送到 remote，批次填寫時建議加上，收尾再 `gne push` 推一次。
 
-`<range>` 給過一次就會被記住，之後省略它就是沿用上一次那一個。記在 `.git/gne/range`——
+`<range>` 給過一次就會被記住，之後省略它就是沿用上一次那一個；編輯器裡按 `Ctrl+R` 隨時換。
+第一次進來沒有可以沿用的區間時，編輯器會問，不是把你踢回命令列。記在 `.git/gne/range`——
 它是這個 clone 的暫存狀態，不是專案的宣告，所以不進版控，也不需要誰去忽略它。
 沒給、又沒有上一次可以沿用時 gne 會說出來，而不是猜一個你的 repo 裡沒有的 ref。
 
 ## 增修欄位
 
-改 `.gne/note-schema.json` 一個檔案就好（`GNE_SCHEMA` 可以指到別的路徑，就像 `GNE_ADVISOR`
-指定顧問）。驗證規則、編輯器表單、`gne set` 的旗標、
+`Ctrl+F` 在畫面上改，或直接改 `.gne/note-schema.json`（`GNE_SCHEMA` 可以指到別的路徑，
+就像 `GNE_ADVISOR` 指定顧問）。兩條路寫的是同一個檔。驗證規則、編輯器表單、`gne set` 的旗標、
 文字與 JSON 輸出、xlsx 表頭都由它衍生，`properties` 的出現順序就是顯示順序。
+
+**改欄位名或刪欄位不只是改宣告。** 宣告的 `additionalProperties` 是 `false`，既有備註裡
+那個欄位沒跟著改，下一次讀取就整批驗證失敗。所以畫面上改的時候，gne 會先說有幾筆備註帶著
+這個欄位、要一起改寫，答應了才動手——備註先改完，宣告才落地。
 
 - `x-input`：`text` / `multiline` / `integer-list` / `choice`，決定值怎麼解析（`integer-list` 收逗號分隔的數字，`choice` 把可選值印在問題裡）。
 - `x-prompt`：**必填**，這個欄位該怎麼填。人在 `gne schema` 讀它，顧問收到的 `fields`
@@ -209,12 +217,17 @@ gne list --filter ai-generated           # 不進畫面的檢視，可接管線
 人工寫入本身就是確認：TUI 的表單依欄位重建整份備註，`gne set` 沒帶 `--ai-generated` 就是人在寫，
 記號在那一刻消失，不必另外下指令清除。
 
-最後一道防線是 [.githooks/pre-push](.githooks/pre-push)：帶著記號的備註推不上 origin。
+最後一道防線是 [.githooks/pre-push](.githooks/pre-push)：帶著記號的備註推不上 remote。
 要它生效，在被標註的那個 repo 裡把 hook 路徑指過去（`git config core.hooksPath .githooks`）。
 
-## 與 origin 的同步
+## 與 remote 的同步
 
-取回走的是 git 對分支的那一套：origin 的備註取到 `refs/notes/origin/commits`（remote-tracking
+跟哪個 remote 同步：`git config gne.remote <name>` 指定；沒設就用 `origin`，沒有 `origin`
+但只有一個 remote 就用那一個。**一個 remote 都沒有也完全能用**——備註寫在本機，
+`gne push` 會說沒有可以推的對象，其餘一切照常。remote 存在但連不上（VPN 沒開、機器關著）
+時取回失敗只是一則說明，不會擋住你把手上這幾筆填完；推送則仍然會失敗，因為那件事真的沒做到。
+
+取回走的是 git 對分支的那一套：remote 的備註取到 `refs/notes/origin/commits`（remote-tracking
 ref），本機那一份不會被它蓋掉，所以**本機有還沒推的備註也一樣取得回來**。取回之後：
 
 | 狀態 | gne 做什麼 |
@@ -222,17 +235,19 @@ ref），本機那一份不會被它蓋掉，所以**本機有還沒推的備註
 | 本機落後 | 直接快轉——取回本來就是這個意思 |
 | 本機領先 | 什麼都不做，也不囉嗦 |
 | 兩邊都有獨有的 | 不動本機那一份，告訴你兩個數字與 `git notes merge origin/commits` |
+| 沒有 remote | 什麼都不做 |
+| remote 連不上 | 說一聲，繼續讓你填 |
 
 合併備註可能衝突，那是人要決定的事，不是取回順手做掉的事。
 
-`refs/notes` 是單一個 ref，所以任何一次推送都會把本機所有備註送上 origin，包含還沒確認的那些。
+`refs/notes` 是單一個 ref，所以任何一次推送都會把本機所有備註送上 remote，包含還沒確認的那些。
 記號跟著備註走，別人 `gne --ai-generated` 一樣看得到，所以這不會弄丟資訊——但要「確認完才公開」就得
 在填寫時一路 `--no-push`，等審閱完再 `gne push`。
 
 ## 新備註從哪裡開始
 
 `.gne/default-note` 是 repo 對「一筆備註還沒填之前長什麼樣」的宣告，與欄位宣告放在同一個
-目錄底下，格式與備註本身一樣是 YAML：
+目錄底下。`Ctrl+D` 在畫面上改，或直接寫檔——格式與備註本身一樣是 YAML：
 
 ```yaml
 type: skip

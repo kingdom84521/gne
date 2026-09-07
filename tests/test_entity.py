@@ -108,13 +108,16 @@ def test_all_notes_returns_every_note_raw(controller, git_repo, commit):
 
 
 def test_push_disabled_means_no_remote_contact(controller, git_repo, commit):
-    """測試用 repo 沒有 origin；push 若真的發生，這裡就會炸。"""
+    """關掉推送就真的不碰 remote。"""
     head = commit()
     controller.add({"type": "skip"}, head)
     assert controller.is_exist(head) is True
 
 
-def test_push_failure_is_reported_but_the_note_is_already_local(git_repo, commit):
+def test_push_failure_is_reported_but_the_note_is_already_local(
+    git_repo, commit, unreachable_origin
+):
+    """推不出去就是推不出去，但備註已經寫進本機了，不會因為推送失敗就不見。"""
     pushing = NoteController({"schematic": "yaml", "fetch": False, "push": True})
     head = commit()
     with pytest.raises(NoteSyncError):
@@ -122,11 +125,30 @@ def test_push_failure_is_reported_but_the_note_is_already_local(git_repo, commit
     assert git.notes_show(head) == "type: skip"
 
 
-def test_fetch_failure_is_reported_separately(git_repo, commit):
-    fetching = NoteController({"schematic": "yaml", "fetch": True, "push": False})
+def test_a_repo_without_a_remote_writes_notes_and_says_nothing(git_repo, commit):
+    """一個人在自己機器上記備註是完整的用法，不是壞掉的設定。"""
+    alone = NoteController({"schematic": "yaml", "fetch": True, "push": True})
+    head = commit()
+    alone.add({"type": "skip"}, head)
+    assert git.notes_show(head) == "type: skip"
+    assert alone.sync_notice is None
+
+
+def test_an_explicit_push_without_a_remote_says_so(controller, git_repo, commit):
+    """自動推送沒有對象是沒事；你明講要推的時候，得知道它推不出去。"""
     commit()
-    with pytest.raises(NoteSyncError):
-        fetching.all_notes()
+    with pytest.raises(NoteError) as caught:
+        controller.push()
+    assert caught.value.id is ERROR_ID.NO_REMOTE
+
+
+def test_a_fetch_that_cannot_reach_the_remote_is_a_notice(git_repo, commit, unreachable_origin):
+    """網路不通不該擋住你把手上這幾筆填完——取回失敗是說明，不是錯誤。"""
+    fetching = NoteController({"schematic": "yaml", "fetch": True, "push": False})
+    head = commit()
+    git.notes_add(head, "type: skip", force=False)
+    assert fetching.all_notes() == {head: {"type": "skip"}}
+    assert "取回" in (fetching.sync_notice or "")
 
 
 def test_json_schematic_round_trips(git_repo, commit):
@@ -148,8 +170,10 @@ def test_pushing_is_refused_while_a_note_waits_for_review(controller, git_repo, 
     assert caught.value.id is ERROR_ID.REVIEW_PENDING
 
 
-def test_pushing_gets_through_once_the_marker_is_gone(controller, git_repo, commit):
-    """這個 repo 沒有 origin，所以「推送真的失敗」正是守門讓它過去的證據。"""
+def test_pushing_gets_through_once_the_marker_is_gone(
+    controller, git_repo, commit, unreachable_origin
+):
+    """remote 連不上，所以「推送真的失敗」正是守門讓它過去的證據。"""
     head = commit()
     controller.add({"type": "fix"}, head)
     with pytest.raises(NoteSyncError):
@@ -161,7 +185,7 @@ def test_unpushed_notes_do_not_stop_the_fetch(git_repo, commit, origin):
     fetching = NoteController({"schematic": "yaml", "fetch": True, "push": False})
     shared = commit()
     git.notes_add(shared, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
 
     mine = commit()
     git.notes_add(mine, "type: fix", force=False)
@@ -175,7 +199,7 @@ def test_being_behind_brings_the_notes_back(git_repo, commit, origin):
     fetching = NoteController({"schematic": "yaml", "fetch": True, "push": False})
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     run_git("update-ref", "-d", git.NOTES_REF, cwd=git_repo)
 
     assert fetching.all_notes() == {head: {"type": "skip"}}
@@ -187,12 +211,12 @@ def test_divergence_is_reported_the_way_git_reports_it(git_repo, commit, origin)
     fetching = NoteController({"schematic": "yaml", "fetch": True, "push": False})
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     shared = run_git("rev-parse", git.NOTES_REF, cwd=git_repo)
 
     second = commit()
     git.notes_add(second, "type: fix", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     run_git("update-ref", git.NOTES_REF, shared, cwd=git_repo)
     git.notes_add(second, "type: feat", force=True)
 
@@ -202,19 +226,6 @@ def test_divergence_is_reported_the_way_git_reports_it(git_repo, commit, origin)
     assert fetching.show(second) == {"type": "feat"}, "分歧時不能動本機那一份"
 
 
-def test_a_real_fetch_failure_still_stops_the_command(git_repo, commit, monkeypatch):
-    fetching = NoteController({"schematic": "yaml", "fetch": True, "push": False})
-    commit()
-
-    def unreachable() -> None:
-        raise git.GitError(("fetch",), 128, "fatal: unable to access: Could not resolve host\n")
-
-    monkeypatch.setattr(git, "notes_fetch", unreachable)
-    with pytest.raises(NoteSyncError):
-        fetching.all_notes()
-    assert fetching.sync_notice is None
-
-
 def test_the_sync_notice_is_taken_once(git_repo, commit):
     """同一則訊息只該出現一次：畫面上說過，離開之後就不該再印一行在終端機上。"""
     fetching = NoteController({"schematic": "yaml", "fetch": False, "push": False})
@@ -222,3 +233,50 @@ def test_the_sync_notice_is_taken_once(git_repo, commit):
     fetching.sync_notice = "有話要說"
     assert fetching.take_sync_notice() == "有話要說"
     assert fetching.take_sync_notice() is None
+
+
+# --- 欄位異動：宣告改了，既有備註要跟著改 ---
+
+
+def test_renaming_a_field_rewrites_the_notes_that_carry_it(controller, git_repo, commit):
+    """宣告的 additionalProperties 是 false，改名不同步就等於讓舊備註全部作廢。"""
+    carrying = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, carrying)
+    untouched = commit()
+    controller.add({"type": "skip"}, untouched)
+
+    rewritten = controller.rename_field("change_log", "summary")
+
+    assert rewritten == (carrying,)
+    assert controller.all_notes()[carrying] == {"type": "fix", "summary": "修好了"}
+    assert controller.all_notes()[untouched] == {"type": "skip"}
+
+
+def test_dropping_a_field_takes_it_out_of_the_notes(controller, git_repo, commit):
+    head = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, head)
+
+    assert controller.drop_field("change_log") == (head,)
+    assert controller.all_notes()[head] == {"type": "fix"}
+
+
+def test_the_affected_notes_can_be_counted_before_anything_changes(controller, git_repo, commit):
+    """先講得出影響幾筆，才輪得到問要不要做。"""
+    carrying = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, carrying)
+    commit()
+
+    assert controller.notes_carrying("change_log") == (carrying,)
+    assert controller.all_notes()[carrying]["change_log"] == "修好了"
+
+
+def test_renaming_leaves_the_ai_marker_alone(controller, git_repo, commit):
+    """ai_generated 不在宣告檔裡，欄位異動不該把它洗掉。"""
+    head = commit()
+    controller.add({"type": "fix", "change_log": "x", "ai_generated": True}, head)
+
+    controller.rename_field("change_log", "summary")
+
+    note = controller.all_notes()[head]
+    assert note["ai_generated"] is True
+    assert note["summary"] == "x"

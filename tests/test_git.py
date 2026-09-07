@@ -67,16 +67,24 @@ def test_commits_in_range_excludes_merges(git_repo, commit):
 
 def test_the_range_that_was_given_is_the_range_that_is_used(git_repo, commit):
     commit()
+    run_git("tag", "v1", cwd=git_repo)
+    commit()
     assert git.resolve_range("v1...HEAD") == "v1...HEAD"
 
 
 def test_a_given_range_is_remembered_for_next_time(git_repo, commit):
+    commit()
+    run_git("tag", "v1", cwd=git_repo)
     commit()
     git.resolve_range("v1...HEAD")
     assert git.resolve_range(None) == "v1...HEAD"
 
 
 def test_the_latest_range_replaces_the_one_before_it(git_repo, commit):
+    commit()
+    run_git("tag", "v1", cwd=git_repo)
+    commit()
+    run_git("tag", "v2", cwd=git_repo)
     commit()
     git.resolve_range("v1...HEAD")
     git.resolve_range("v2...HEAD")
@@ -85,6 +93,8 @@ def test_the_latest_range_replaces_the_one_before_it(git_repo, commit):
 
 def test_the_cache_lives_under_the_git_directory(git_repo, commit):
     """暫存的區間不是專案的宣告：放在 .git 底下，沒有人需要去忽略它。"""
+    commit()
+    run_git("tag", "v1", cwd=git_repo)
     commit()
     git.resolve_range("v1...HEAD")
     assert git.range_cache_path().is_relative_to(git.git_dir())
@@ -100,7 +110,7 @@ def test_no_range_and_nothing_remembered_is_an_error(git_repo, commit):
 
 def test_an_empty_cache_counts_as_nothing_remembered(git_repo, commit):
     commit()
-    git.remember_range("v1...HEAD")
+    git.remember_range("HEAD...HEAD")
     git.range_cache_path().write_text("  \n\t\n")
     with pytest.raises(git.RangeNotGiven):
         git.resolve_range(None)
@@ -341,14 +351,14 @@ def test_fetching_lands_on_the_tracking_ref_not_on_the_local_one(git_repo, commi
     """本機有還沒推的備註也一樣取得回來——這正是直接取進 refs/notes/commits 做不到的事。"""
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     local = run_git("rev-parse", git.NOTES_REF, cwd=git_repo)
 
     second = commit()
     git.notes_add(second, "type: fix", force=False)
     ahead_local = run_git("rev-parse", git.NOTES_REF, cwd=git_repo)
 
-    git.notes_fetch()
+    git.notes_fetch("origin")
     assert run_git("rev-parse", git.NOTES_TRACKING_REF, cwd=git_repo) == local
     assert run_git("rev-parse", git.NOTES_REF, cwd=git_repo) == ahead_local
     assert git.notes_sync_state() == (1, 0)
@@ -363,13 +373,13 @@ def test_the_configured_notes_refspec_cannot_clobber_the_local_ref(git_repo, com
     run_git("config", "--add", "remote.origin.fetch", "+refs/notes/*:refs/notes/*", cwd=git_repo)
     shared = commit()
     git.notes_add(shared, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
 
     mine = commit()
     git.notes_add(mine, "type: fix", force=False)
     before = run_git("rev-parse", git.NOTES_REF, cwd=git_repo)
 
-    git.notes_fetch()
+    git.notes_fetch("origin")
     assert run_git("rev-parse", git.NOTES_REF, cwd=git_repo) == before
     assert git.notes_show(mine) == "type: fix"
 
@@ -377,10 +387,10 @@ def test_the_configured_notes_refspec_cannot_clobber_the_local_ref(git_repo, com
 def test_being_behind_is_counted_on_the_other_side(git_repo, commit, origin):
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     run_git("update-ref", "-d", git.NOTES_REF, cwd=git_repo)
 
-    git.notes_fetch()
+    git.notes_fetch("origin")
     assert git.notes_sync_state() == (0, 1)
     git.notes_fast_forward()
     assert git.notes_show(head) == "type: skip"
@@ -389,17 +399,17 @@ def test_being_behind_is_counted_on_the_other_side(git_repo, commit, origin):
 def test_both_sides_having_their_own_is_divergence(git_repo, commit, origin):
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     shared = run_git("rev-parse", git.NOTES_REF, cwd=git_repo)
 
     second = commit()
     git.notes_add(second, "type: fix", force=False)
-    git.notes_push()
+    git.notes_push("origin")
 
     run_git("update-ref", git.NOTES_REF, shared, cwd=git_repo)
     git.notes_add(second, "type: feat", force=True)
 
-    git.notes_fetch()
+    git.notes_fetch("origin")
     assert git.notes_sync_state() == (1, 1)
 
 
@@ -407,8 +417,60 @@ def test_pushing_sends_the_notes_and_not_the_tracking_ref(git_repo, commit, orig
     """refs/notes/* 會把 origin/commits 那一份也推上去，那是本機的追蹤資料。"""
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
-    git.notes_fetch()
-    git.notes_push()
+    git.notes_push("origin")
+    git.notes_fetch("origin")
+    git.notes_push("origin")
     listed = run_git("for-each-ref", "--format=%(refname)", "refs/notes", cwd=origin)
     assert listed == git.NOTES_REF
+
+
+# --- 備註跟哪個 remote 同步 ---
+
+
+def test_a_repo_without_remotes_has_no_notes_remote(git_repo, commit):
+    """沒有 remote 是一種狀態，不是錯誤：自己記給自己看也是用法。"""
+    commit()
+    assert git.notes_remote() is None
+
+
+def test_origin_is_used_when_it_exists(git_repo, commit, origin):
+    commit()
+    assert git.notes_remote() == "origin"
+
+
+def test_a_lone_remote_is_used_even_when_it_is_not_called_origin(git_repo, commit, tmp_path):
+    commit()
+    run_git("remote", "add", "upstream", str(tmp_path / "up.git"), cwd=git_repo)
+    assert git.notes_remote() == "upstream"
+
+
+def test_several_remotes_without_origin_have_to_be_told_apart(git_repo, commit, tmp_path):
+    commit()
+    run_git("remote", "add", "upstream", str(tmp_path / "up.git"), cwd=git_repo)
+    run_git("remote", "add", "fork", str(tmp_path / "fork.git"), cwd=git_repo)
+    with pytest.raises(git.RemoteUnclear):
+        git.notes_remote()
+
+
+def test_the_configured_remote_wins_over_origin(git_repo, commit, origin, tmp_path):
+    commit()
+    run_git("remote", "add", "upstream", str(tmp_path / "up.git"), cwd=git_repo)
+    run_git("config", git.REMOTE_CONFIG_KEY, "upstream", cwd=git_repo)
+    assert git.notes_remote() == "upstream"
+
+
+def test_a_configured_remote_that_does_not_exist_is_said_out_loud(git_repo, commit, origin):
+    """安靜地退回 origin 會讓人以為推去了別的地方。"""
+    commit()
+    run_git("config", git.REMOTE_CONFIG_KEY, "nowhere", cwd=git_repo)
+    with pytest.raises(git.RemoteUnclear):
+        git.notes_remote()
+
+
+def test_a_range_git_cannot_resolve_is_refused_before_it_is_remembered(git_repo, commit):
+    """打錯的區間不該被記起來，下一次沿用時又壞一次。"""
+    commit()
+    git.resolve_range("HEAD...HEAD")
+    with pytest.raises(git.RangeNotGiven):
+        git.resolve_range("沒有這個東西...HEAD")
+    assert git.remembered_range() == "HEAD...HEAD"

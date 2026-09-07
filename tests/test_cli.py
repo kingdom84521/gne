@@ -545,7 +545,8 @@ def test_an_ai_write_does_not_even_try_to_push(git_repo, commit, no_remote):
     assert cli.main(["set", "--ai-generated", "--type", "fix"]) == 0
 
 
-def test_a_human_write_still_pushes_unless_told_not_to(git_repo, commit, no_remote):
+def test_a_human_write_still_pushes_unless_told_not_to(git_repo, commit, unreachable_origin):
+    """人工寫入會嘗試推送——推不出去就是非零，這正是「有推」的證據。"""
     commit()
     assert cli.main(["set", "--type", "fix"]) != 0
 
@@ -566,11 +567,11 @@ def test_the_sync_notice_reaches_stderr_without_failing_the_command(
     monkeypatch.setattr(cli, "DEFAULT_FETCH", True)
     head = commit()
     git.notes_add(head, "type: skip", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     shared = run_git("rev-parse", git.NOTES_REF, cwd=git_repo)
     second = commit()
     git.notes_add(second, "type: fix", force=False)
-    git.notes_push()
+    git.notes_push("origin")
     run_git("update-ref", git.NOTES_REF, shared, cwd=git_repo)
     git.notes_add(second, "type: feat", force=True)
 

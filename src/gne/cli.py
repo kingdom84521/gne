@@ -424,6 +424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         NoteSyncError,
         git.GitError,
         git.RangeNotGiven,
+        git.RemoteUnclear,
         schema.SchemaNotDeclared,
         render.InputError,
         export.ExportError,

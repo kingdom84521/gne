@@ -16,7 +16,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Header, OptionList, Static
 
 from .. import advisor
-from ..core import git, provenance, schema
+from ..core import defaults, git, provenance, schema
 from ..core.entity import NoteController, NoteError, NoteSyncError
 from ..core.types import NoteDocument
 from . import keys, session
@@ -24,6 +24,10 @@ from .screens import (
     CommitDetailScreen,
     CommitInfoScreen,
     ConfirmScreen,
+    DefaultNoteScreen,
+    FieldPlan,
+    FieldsScreen,
+    RangeScreen,
     ShortcutsScreen,
     SuggestionScreen,
 )
@@ -107,6 +111,9 @@ class GneApp(App[None]):
         keys.hidden("ctrl+shift+w", "leave_now", "強制關閉"),
         keys.hidden("ctrl+o", "show_commit_info", "commit 資訊"),  # Ctrl+I 見 on_key
         keys.hidden("f1", "show_detail", "檔案與 diff"),
+        keys.hidden("ctrl+r", "change_range", "改看哪一段"),
+        keys.hidden("ctrl+d", "edit_default_note", "新備註的起點"),
+        keys.hidden("ctrl+f", "edit_fields", "欄位宣告"),
     ]
 
     state: reactive[EditorState] = reactive(EditorState, always_update=True)
@@ -272,7 +279,11 @@ class GneApp(App[None]):
                 ai_only=self._ai_only,
                 only=self._only,
             )
-        except (NoteSyncError, git.GitError) as error:
+        except git.RangeNotGiven:
+            # 第一次進來沒有可以沿用的區間：問，而不是把人踢出去重下一次命令列。
+            self.call_from_thread(self.action_change_range)
+            return
+        except (NoteSyncError, git.GitError, schema.SchemaNotDeclared) as error:
             self.call_from_thread(self._loading_failed, str(error))
             return
         self.call_from_thread(self._apply_loaded, loaded)
@@ -290,6 +301,100 @@ class GneApp(App[None]):
         self.commit_list.focus()
         if self._only is not None and loaded.commits:
             self.action_start_edit()
+
+    # --- 專案自己的設定：區間、起點、欄位 ---
+
+    def action_change_range(self) -> None:
+        self.push_screen(RangeScreen(self._current_range()), self._take_range)
+
+    def _current_range(self) -> str | None:
+        """畫面上先給現在這一段，改的人通常只動其中一端。"""
+        if self._revision_range:
+            return self._revision_range
+        try:
+            return git.remembered_range()
+        except git.GitError:
+            return None
+
+    def _take_range(self, wanted: str | None) -> None:
+        if wanted is None or wanted == self._revision_range:
+            return
+        self._revision_range = wanted
+        self.reload_commits()
+
+    def action_edit_default_note(self) -> None:
+        try:
+            current = defaults.default_note()
+        except (schema.NoteValidationError, schema.SchemaNotDeclared) as error:
+            self.notify(str(error), severity="error")
+            return
+        self.push_screen(DefaultNoteScreen(current), self._take_default_note)
+
+    def _take_default_note(self, document: dict[str, object] | None) -> None:
+        if document is None:
+            return
+        try:
+            path = defaults.save_default_note(dict(document))
+        except (schema.NoteValidationError, git.GitError, OSError) as error:
+            self.notify(str(error), severity="error")
+            return
+        self.notify(f"已寫入 {path.name}")
+        self.reload_commits()
+
+    def action_edit_fields(self) -> None:
+        try:
+            document = schema.load_schema()
+        except (schema.SchemaNotDeclared, schema.SchemaDeclarationError) as error:
+            self.notify(str(error), severity="error")
+            return
+        self.push_screen(FieldsScreen(document, self._notes_carrying), self._take_field_plan)
+
+    def _notes_carrying(self, key: str) -> int:
+        """刪一個欄位之前要講得出影響幾筆。問不到就說 0，畫面不會因此擋人。"""
+        try:
+            return len(self._controller.notes_carrying(key))
+        except (NoteError, git.GitError):
+            return 0
+
+    def _take_field_plan(self, plan: FieldPlan | None) -> None:
+        if plan is None:
+            return
+        if not plan.touches_existing_notes:
+            self._apply_field_plan(plan)
+            return
+        self.push_screen(
+            ConfirmScreen(self._migration_question(plan)),
+            lambda yes: self._apply_field_plan(plan) if yes else None,
+        )
+
+    def _migration_question(self, plan: FieldPlan) -> str:
+        lines = ["這次改動會一起改寫既有的備註："]
+        lines += [f"　{old} → {new}" for old, new in plan.renames]
+        lines += [f"　拿掉 {key}" for key in plan.drops]
+        lines.append("要繼續嗎？")
+        return "\n".join(lines)
+
+    @work(thread=True, exclusive=True, group="fields")
+    def _apply_field_plan(self, plan: FieldPlan) -> None:
+        """先改備註再寫宣告。
+
+        反過來的話，中間那一刻宣告已經換了、備註還是舊的，這時候任何一次讀取都會
+        整批驗證失敗——那正是這條路要避免的事。
+        """
+        try:
+            for old_key, new_key in plan.renames:
+                self._controller.rename_field(old_key, new_key)
+            for key in plan.drops:
+                self._controller.drop_field(key)
+            schema.save_schema(plan.document)
+        except (NoteError, NoteSyncError, git.GitError, schema.SchemaDeclarationError) as error:
+            self.call_from_thread(self.notify, str(error), severity="error")
+            return
+        self.call_from_thread(self._fields_applied)
+
+    def _fields_applied(self) -> None:
+        self.notify("欄位宣告已更新")
+        self.reload_commits()
 
     # --- 編輯 ---
 

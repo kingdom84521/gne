@@ -150,6 +150,26 @@ def load_schema() -> Mapping[str, Any]:
         raise SchemaDeclarationError(f"{path} 不是合法的 JSON Schema：{error.message}") from error
 
 
+def forget_schema() -> None:
+    """丟掉快取的宣告。宣告檔在同一個行程裡被改寫之後必須叫這個。"""
+    load_schema.cache_clear()
+    note_fields.cache_clear()
+    field_by_key.cache_clear()
+    _note_validator.cache_clear()
+
+
+def save_schema(document: Mapping[str, Any]) -> Path:
+    """寫回宣告檔。寫之前先驗自己，壞掉的宣告不該落地。"""
+    build_fields(document)
+    Draft202012Validator.check_schema(dict(document))
+
+    path = schema_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    forget_schema()
+    return path
+
+
 def build_fields(document: Mapping[str, Any]) -> tuple[NoteField, ...]:
     required = set(document.get("required", ()))
     fields: list[NoteField] = []

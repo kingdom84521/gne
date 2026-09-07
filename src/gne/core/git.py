@@ -13,6 +13,10 @@ from pathlib import Path
 # 上一次用過的區間記在 .git 底下：它是這個 clone 的暫存狀態，不是專案的宣告。
 RANGE_CACHE_RELATIVE = Path("gne/range")
 
+# 備註要跟哪個 remote 同步。git config 就是放這種設定的地方，不必自己再開一個檔。
+REMOTE_CONFIG_KEY = "gne.remote"
+CONVENTIONAL_REMOTE = "origin"
+
 _CHERRY_PICK_PATTERN = re.compile(r"\(cherry picked from commit ([0-9a-f]{7,40})\)")
 
 SHORT_HASH_LENGTH = 10
@@ -30,6 +34,10 @@ _LOG_FORMAT = _FIELD_SEPARATOR.join(_LOG_FIELDS)
 
 class RangeNotGiven(RuntimeError):
     """要看哪一段沒人說得出來：這一次沒給，這個 clone 也沒用過任何區間。"""
+
+
+class RemoteUnclear(RuntimeError):
+    """有 remote，但說不出該跟哪一個同步。"""
 
 
 class GitError(RuntimeError):
@@ -180,6 +188,11 @@ def resolve_range(given: str | None) -> str:
     沒有可以沿用的就報錯而不是猜一個——猜出來的 ref 在別人的 repo 裡不存在。
     """
     if given:
+        if not range_is_resolvable(given):
+            raise RangeNotGiven(
+                f"git 認不得這一段：{given}\n"
+                "區間長成 <起點>...<終點>，兩端都要是這個 repo 裡真的有的 ref。"
+            )
         remember_range(given)
         return given
 
@@ -245,19 +258,68 @@ def notes_remove(revision: str) -> None:
     git_lines("notes", "remove", revision)
 
 
-def notes_fetch() -> None:
-    """把 origin 的備註取到追蹤用的 ref 上。
+def remotes() -> tuple[str, ...]:
+    return tuple(git_lines("remote"))
+
+
+def configured_remote() -> str | None:
+    completed = _run("config", "--get", REMOTE_CONFIG_KEY)
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def notes_remote() -> str | None:
+    """備註跟哪個 remote 同步；沒有 remote 就回 None。
+
+    一個人在自己機器上記備註是完全成立的用法，所以「沒有 remote」是一種狀態而不是
+    錯誤。反過來，設了 gne.remote 卻指到不存在的 remote 是設定寫錯，要當場講出來，
+    不能安靜地退回本機模式——那會讓人以為推上去了。
+    """
+    available = remotes()
+    configured = configured_remote()
+
+    if configured:
+        if configured not in available:
+            raise RemoteUnclear(
+                f"{REMOTE_CONFIG_KEY} 指的是 {configured}，但這個 repo 沒有這個 remote。"
+            )
+        return configured
+
+    if CONVENTIONAL_REMOTE in available:
+        return CONVENTIONAL_REMOTE
+
+    if len(available) == 1:
+        return available[0]
+
+    if available:
+        raise RemoteUnclear(
+            f"有 {len(available)} 個 remote（{'、'.join(available)}）而且都不叫 "
+            f"{CONVENTIONAL_REMOTE}，說不出備註該跟哪一個同步。\n"
+            f"用 git config {REMOTE_CONFIG_KEY} <remote> 指定一個。"
+        )
+
+    return None
+
+
+def notes_fetch(remote: str) -> None:
+    """把 remote 的備註取到追蹤用的 ref 上。
 
     不直接取進 refs/notes/commits：那等於 `git fetch origin master:master`，本機只要有
     還沒推的東西就會被拒絕。git 本來的做法是取到 remote-tracking ref，取回永遠成功，
     差異怎麼處理留給你決定。
 
-    --refmap= 不能拿掉：這個 repo 的 remote.origin.fetch 設著 +refs/notes/*:refs/notes/*，
+    --refmap= 不能拿掉：remote.<name>.fetch 可能設著 +refs/notes/*:refs/notes/*，
     而 git 即使收到命令列的 refspec，仍會依設定順手更新對應的 ref（opportunistic update）。
     那條設定帶著 +，於是取回會把本機的 refs/notes/commits 強制退回 origin 那一版，還沒推
     的備註就此消失。空的 --refmap= 關掉那個行為。
     """
-    git_lines("fetch", "--refmap=", "origin", f"+{NOTES_REF}:{NOTES_TRACKING_REF}")
+    git_lines("fetch", "--refmap=", remote, f"+{NOTES_REF}:{NOTES_TRACKING_REF}")
+
+
+def range_is_resolvable(revision_range: str) -> bool:
+    """git 認不認得這一段。打錯的區間要當場說，不是等掃描到一半才炸。"""
+    return git_succeeds("rev-list", "-1", revision_range)
 
 
 def ref_exists(ref: str) -> bool:
@@ -280,9 +342,9 @@ def notes_fast_forward() -> None:
     git_lines("update-ref", NOTES_REF, NOTES_TRACKING_REF)
 
 
-def notes_push() -> None:
+def notes_push(remote: str) -> None:
     """只推備註本身。refs/notes/* 會連追蹤用的那一份一起推上去。"""
-    git_lines("push", "origin", f"{NOTES_REF}:{NOTES_REF}")
+    git_lines("push", remote, f"{NOTES_REF}:{NOTES_REF}")
 
 
 @dataclass(frozen=True)

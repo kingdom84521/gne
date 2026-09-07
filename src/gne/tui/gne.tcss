@@ -247,3 +247,43 @@ CommitDetailScreen {
 #detail-tabs {
     height: 1fr;
 }
+
+/* 專案自己的設定：區間、起點、欄位 */
+
+.dialog-error {
+    color: $error;
+    margin: 1 0 0 0;
+}
+
+.dialog-explanation {
+    color: $text-muted;
+    margin: 0 0 1 0;
+}
+
+#range-box, #default-note-box, #fields-box, #field-form-box {
+    width: 80%;
+    max-width: 100;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+}
+
+#range-question, #default-note-title, #fields-title, #field-form-heading {
+    text-style: bold;
+    margin: 0 0 1 0;
+}
+
+#default-note-fields, #field-form-rows {
+    height: auto;
+    max-height: 20;
+}
+
+.default-note-label, .field-form-label {
+    color: $text-muted;
+    margin: 1 0 0 0;
+}
+
+#fields-list {
+    height: auto;
+    max-height: 16;
+}

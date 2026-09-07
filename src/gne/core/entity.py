@@ -32,6 +32,7 @@ class ERROR_ID(str, Enum):
     NOTE_NOT_FOUND = "NOTE_NOT_FOUND"
     NOTE_EXISTED = "NOTE_EXISTED"
     REVIEW_PENDING = "REVIEW_PENDING"
+    NO_REMOTE = "NO_REMOTE"
 
 
 _MESSAGES: Mapping[ERROR_ID, str] = {
@@ -39,7 +40,8 @@ _MESSAGES: Mapping[ERROR_ID, str] = {
     ERROR_ID.COMMIT_NOT_FOUND: "這個 hash 不在目前的 repository 裡",
     ERROR_ID.NOTE_NOT_FOUND: "這個 hash 沒有掛任何備註",
     ERROR_ID.NOTE_EXISTED: "這個 hash 已經有備註了，要覆寫請加上 force",
-    ERROR_ID.REVIEW_PENDING: "有備註還沒有人工確認，refs/notes 不能推上 origin",
+    ERROR_ID.REVIEW_PENDING: "有備註還沒有人工確認，refs/notes 不能推上 remote",
+    ERROR_ID.NO_REMOTE: "這個 repo 沒有 remote，備註只存在本機",
 }
 
 
@@ -63,13 +65,14 @@ DIVERGED_NOTICE = (
 
 
 class NoteSyncError(RuntimeError):
-    """與 origin 同步 refs/notes 時失敗。本機的異動已經完成。"""
+    """與 remote 同步 refs/notes 時失敗。本機的異動已經完成。"""
 
-    def __init__(self, action: str, cause: git.GitError):
+    def __init__(self, action: str, remote: str, cause: git.GitError):
         self.action = action
+        self.remote = remote
         self.cause = cause
         wording = {"fetch": "取回", "push": "推送"}[action]
-        super().__init__(f"{wording} origin 的 refs/notes 失敗：{cause.stderr.strip()}")
+        super().__init__(f"{wording} {remote} 的 refs/notes 失敗：{cause.stderr.strip()}")
 
 
 _CODECS: Mapping[Schematic, tuple[Callable[[str], Any], Callable[[Any], str]]] = {
@@ -158,18 +161,37 @@ class NoteController:
         self._fetch_enabled = options.get("fetch", True)
         self._push_enabled = options.get("push", True)
         self._fetched = False
+        self._remote_resolved: tuple[str | None] | None = None
         self.sync_notice: str | None = None
 
     # --- 與 origin 的同步 ---
 
+    def _remote(self) -> str | None:
+        """這個 repo 的備註 remote，問一次就記住。"""
+        if self._remote_resolved is None:
+            self._remote_resolved = (git.notes_remote(),)
+        return self._remote_resolved[0]
+
     def _fetch_once(self) -> None:
+        """取回失敗不擋人做事。
+
+        備註是本機先寫、之後才同步的東西。網路不通、VPN 沒開、remote 掛了——這些都
+        不影響你把手上這幾筆填完，所以取回失敗是一則說明而不是一個錯誤。真正必須成功
+        的是推送，那條路仍然會擋下來。
+        """
         if not self._fetch_enabled or self._fetched:
             return
         self._fetched = True
+
+        remote = self._remote()
+        if remote is None:
+            return
+
         try:
-            git.notes_fetch()
+            git.notes_fetch(remote)
         except git.GitError as error:
-            raise NoteSyncError("fetch", error) from error
+            self.sync_notice = str(NoteSyncError("fetch", remote, error))
+            return
         self._reconcile()
 
     def _reconcile(self) -> None:
@@ -202,14 +224,66 @@ class NoteController:
                 ERROR_ID.REVIEW_PENDING,
                 detail=f"還有 {len(waiting)} 筆待確認，先用 gne --ai-generated 逐筆看過",
             )
+        remote = self._remote()
+        if remote is None:
+            raise NoteError(ERROR_ID.NO_REMOTE, detail="沒有可以推送的對象")
+
         try:
-            git.notes_push()
+            git.notes_push(remote)
         except git.GitError as error:
-            raise NoteSyncError("push", error) from error
+            raise NoteSyncError("push", remote, error) from error
 
     def _push_if_automatic(self) -> None:
-        if self._push_enabled:
+        """沒有 remote 時「自動推送」沒有對象，不是失敗。明確的 gne push 才會報錯。"""
+        if self._push_enabled and self._remote() is not None:
             self.push()
+
+    # --- 欄位異動：宣告改了，既有的備註要跟著改 ---
+
+    def notes_carrying(self, key: str) -> tuple[str, ...]:
+        """哪幾筆備註帶著這個欄位。改名或刪除之前要先講得出影響範圍。"""
+        return tuple(
+            revision for revision, note in self.all_notes().items() if key in note
+        )
+
+    def rename_field(self, old_key: str, new_key: str) -> tuple[str, ...]:
+        """把既有備註裡的欄位改名，回傳被改寫的那幾筆。
+
+        宣告檔的 additionalProperties 是 false，所以改了宣告卻沒改備註，等於讓所有
+        舊備註在下一次讀取時全部驗證失敗。改名是兩件事一起做，不是兩個步驟。
+        """
+        return self._rewrite(
+            lambda note: {new_key if key == old_key else key: value for key, value in note.items()},
+            touches=lambda note: old_key in note,
+        )
+
+    def drop_field(self, key: str) -> tuple[str, ...]:
+        """把欄位從既有備註裡拿掉，回傳被改寫的那幾筆。"""
+        return self._rewrite(
+            lambda note: {name: value for name, value in note.items() if name != key},
+            touches=lambda note: key in note,
+        )
+
+    def _rewrite(
+        self,
+        change: Callable[[dict[str, Any]], dict[str, Any]],
+        touches: Callable[[dict[str, Any]], bool],
+    ) -> tuple[str, ...]:
+        """逐筆改寫備註，不經過驗證。
+
+        改寫進行到一半時，備註對舊宣告與新宣告都不成立——這裡是唯一一個必須繞過
+        驗證的地方，所以它不對外開放，只由欄位異動這一條路叫。
+        """
+        rewritten: list[str] = []
+        for revision, note in self.all_notes().items():
+            if not touches(note):
+                continue
+            git.notes_add(revision, self._dumps(change(note)), force=True)
+            rewritten.append(revision)
+
+        if rewritten:
+            self._push_if_automatic()
+        return tuple(rewritten)
 
     # --- 編解碼：驗證在這裡，繞不過去 ---
 

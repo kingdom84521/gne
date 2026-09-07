@@ -95,7 +95,7 @@ def test_save_promotes_written_notes_into_the_returned_state(controller, git_rep
     assert dict(outcome.state.saved[head]) == {"type": "feat", "change_log": "內容"}
 
 
-def test_save_pushes_once_for_the_whole_batch(controller, git_repo, commit, monkeypatch):
+def test_save_pushes_once_for_the_whole_batch(controller, git_repo, commit, origin, monkeypatch):
     base = commit("feat: base")
     first = commit("feat: 一")
     second = commit("fix: 二")
@@ -105,7 +105,7 @@ def test_save_pushes_once_for_the_whole_batch(controller, git_repo, commit, monk
         .staged(second, {"type": "fix", "change_log": "二"})
     )
     pushes: list[int] = []
-    monkeypatch.setattr(git, "notes_push", lambda: pushes.append(1))
+    monkeypatch.setattr(git, "notes_push", lambda remote: pushes.append(remote))
     session.save_pending(state, controller, push=True)
     assert len(pushes) == 1
 
@@ -117,7 +117,7 @@ def test_save_does_not_push_when_asked_not_to(controller, git_repo, commit, monk
         head, {"type": "feat", "change_log": "內容"}
     )
     pushes: list[int] = []
-    monkeypatch.setattr(git, "notes_push", lambda: pushes.append(1))
+    monkeypatch.setattr(git, "notes_push", lambda remote: pushes.append(remote))
     outcome = session.save_pending(state, controller, push=False)
     assert outcome.written == (head,)
     assert pushes == []
@@ -128,7 +128,7 @@ def test_save_does_not_push_when_nothing_was_written(controller, git_repo, commi
     commit("feat: 一")
     state = session.load(controller, f"{base}...master")
     pushes: list[int] = []
-    monkeypatch.setattr(git, "notes_push", lambda: pushes.append(1))
+    monkeypatch.setattr(git, "notes_push", lambda remote: pushes.append(remote))
     session.save_pending(state, controller, push=True)
     assert pushes == []
 

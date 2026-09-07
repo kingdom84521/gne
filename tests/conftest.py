@@ -91,6 +91,12 @@ def origin(git_repo, tmp_path):
 
 
 @pytest.fixture
+def unreachable_origin(git_repo, tmp_path):
+    """有 remote 但連不上：VPN 沒開、機器關著、路徑打錯都長這樣。"""
+    run_git("remote", "add", "origin", str(tmp_path / "nowhere.git"), cwd=git_repo)
+
+
+@pytest.fixture
 def commit(git_repo):
     """在 git_repo 裡建一個 commit，回傳其完整 hash。"""
     counter = {"value": 0}
