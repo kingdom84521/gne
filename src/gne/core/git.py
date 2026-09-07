@@ -234,9 +234,11 @@ def notes_grep(pattern: str, ref: str = NOTES_REF) -> list[str]:
     ]
 
 
-def notes_list() -> dict[str, str]:
+def notes_list(ref: str = NOTES_REF) -> dict[str, str]:
+    if not ref_exists(ref):
+        return {}
     entries: dict[str, str] = {}
-    for line in git_lines("notes", "list"):
+    for line in git_lines("notes", f"--ref={ref}", "list"):
         blob, _, target = line.partition(" ")
         if target:
             entries[target] = blob
@@ -335,6 +337,49 @@ def notes_sync_state() -> tuple[int, int]:
     counted = git_line("rev-list", "--left-right", "--count", f"{NOTES_REF}...{NOTES_TRACKING_REF}")
     ahead, _, behind = counted.partition("\t")
     return (int(ahead or 0), int(behind.strip() or 0))
+
+
+@dataclass(frozen=True)
+class NotesDivergence:
+    """本機與 remote 的備註各自有什麼。
+
+    比的是「哪個 commit 掛著哪一個 blob」，不是 commit 圖——兩邊各寫了不同的 commit
+    只是各做各的，兩邊對同一個 commit 寫了不一樣的東西才是真的要有人決定。
+    """
+
+    only_local: tuple[str, ...] = ()
+    only_remote: tuple[str, ...] = ()
+    conflicting: tuple[str, ...] = ()
+
+    @property
+    def can_unite(self) -> bool:
+        """併起來會不會弄丟東西。沒有衝突就是兩邊的聯集，誰都不會少。"""
+        return not self.conflicting
+
+    @property
+    def needs_uniting(self) -> bool:
+        return bool(self.only_remote or self.conflicting)
+
+
+def notes_divergence() -> NotesDivergence:
+    local = notes_list(NOTES_REF)
+    tracking = notes_list(NOTES_TRACKING_REF)
+
+    shared = local.keys() & tracking.keys()
+    return NotesDivergence(
+        only_local=tuple(sorted(local.keys() - tracking.keys())),
+        only_remote=tuple(sorted(tracking.keys() - local.keys())),
+        conflicting=tuple(sorted(key for key in shared if local[key] != tracking[key])),
+    )
+
+
+def notes_unite() -> None:
+    """把 remote 有而本機沒有的備註併進來。
+
+    只在沒有衝突時叫得動——衝突表示同一個 commit 兩邊各寫了不同的東西，合併必須
+    挑一邊，那就有東西會不見。挑哪一邊是人的決定，不是這裡順手做掉的事。
+    """
+    git_lines("notes", "merge", NOTES_TRACKING_REF)
 
 
 def notes_fast_forward() -> None:

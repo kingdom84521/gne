@@ -280,3 +280,75 @@ def test_renaming_leaves_the_ai_marker_alone(controller, git_repo, commit):
     note = controller.all_notes()[head]
     assert note["ai_generated"] is True
     assert note["summary"] == "x"
+
+
+# --- 欄位異動之前先跟 remote 併成聯集 ---
+
+
+def _second_clone(tmp_path, origin):
+    """另一個人的 clone。用來製造「remote 上有本機沒有的備註」。"""
+    other = tmp_path / "other"
+    run_git("clone", "-q", str(origin), str(other), cwd=tmp_path)
+    run_git("config", "user.email", "other@example.com", cwd=other)
+    run_git("config", "user.name", "Other", cwd=other)
+    return other
+
+
+def test_a_rename_pulls_in_what_only_the_remote_has(
+    controller, git_repo, commit, origin, tmp_path
+):
+    """本機落後時直接改寫再推，remote 獨有的備註會被輾掉。先併成聯集才動手。"""
+    shared = commit()
+    theirs = commit()
+    mine = commit()
+
+    controller.add({"type": "fix", "change_log": "兩邊都有的"}, shared)
+    git.notes_push("origin")
+
+    other = _second_clone(tmp_path, origin)
+    run_git("fetch", "-q", "origin", "refs/notes/commits:refs/notes/commits", cwd=other)
+    run_git("notes", "add", "-m", "type: feat\nchange_log: 只有 remote 有的", theirs, cwd=other)
+    run_git("push", "-q", "origin", "refs/notes/commits:refs/notes/commits", cwd=other)
+
+    controller.add({"type": "skip", "change_log": "只有本機有的"}, mine)
+
+    syncing = NoteController({"schematic": "yaml", "fetch": True, "push": False})
+    syncing.rename_field("change_log", "summary")
+
+    notes = syncing.all_notes()
+    assert notes[shared] == {"type": "fix", "summary": "兩邊都有的"}
+    assert notes[mine] == {"type": "skip", "summary": "只有本機有的"}
+    assert notes[theirs] == {"type": "feat", "summary": "只有 remote 有的"}, "remote 獨有的也要改到"
+
+
+def test_a_field_change_is_refused_when_the_two_sides_disagree(
+    controller, git_repo, commit, origin, tmp_path
+):
+    """同一個 commit 兩邊各寫了不同的東西，合併就得挑一邊——那是人的決定。"""
+    shared = commit()
+    controller.add({"type": "fix", "change_log": "原本的說法"}, shared)
+    git.notes_push("origin")
+
+    other = _second_clone(tmp_path, origin)
+    run_git("fetch", "-q", "origin", "refs/notes/commits:refs/notes/commits", cwd=other)
+    run_git("notes", "add", "-f", "-m", "type: fix\nchange_log: 他們的說法", shared, cwd=other)
+    run_git("push", "-q", "-f", "origin", "refs/notes/commits:refs/notes/commits", cwd=other)
+
+    controller.add({"type": "fix", "change_log": "我改過的說法"}, shared, isForce=True)
+
+    syncing = NoteController({"schematic": "yaml", "fetch": True, "push": False})
+    with pytest.raises(NoteError) as caught:
+        syncing.rename_field("change_log", "summary")
+
+    assert caught.value.id is ERROR_ID.NOTES_CONFLICT
+    assert syncing.all_notes()[shared] == {
+        "type": "fix",
+        "change_log": "我改過的說法",
+    }, "拒絕就是什麼都沒動"
+
+
+def test_without_a_remote_a_field_change_needs_no_sync(controller, git_repo, commit):
+    head = commit()
+    controller.add({"type": "fix", "change_log": "只有本機"}, head)
+    assert controller.unify_with_remote() == ()
+    assert controller.rename_field("change_log", "summary") == (head,)

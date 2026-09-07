@@ -33,6 +33,7 @@ class ERROR_ID(str, Enum):
     NOTE_EXISTED = "NOTE_EXISTED"
     REVIEW_PENDING = "REVIEW_PENDING"
     NO_REMOTE = "NO_REMOTE"
+    NOTES_CONFLICT = "NOTES_CONFLICT"
 
 
 _MESSAGES: Mapping[ERROR_ID, str] = {
@@ -42,6 +43,7 @@ _MESSAGES: Mapping[ERROR_ID, str] = {
     ERROR_ID.NOTE_EXISTED: "這個 hash 已經有備註了，要覆寫請加上 force",
     ERROR_ID.REVIEW_PENDING: "有備註還沒有人工確認，refs/notes 不能推上 remote",
     ERROR_ID.NO_REMOTE: "這個 repo 沒有 remote，備註只存在本機",
+    ERROR_ID.NOTES_CONFLICT: "本機與 remote 對同一個 commit 各寫了不同的備註",
 }
 
 
@@ -246,12 +248,45 @@ class NoteController:
             revision for revision, note in self.all_notes().items() if key in note
         )
 
+    def unify_with_remote(self) -> tuple[str, ...]:
+        """改寫備註之前，先把 remote 有而本機沒有的那些併進來。
+
+        欄位異動改寫的是「本機看得到的備註」，推上去之後那一份就是大家的版本。
+        本機落後時直接改寫再推，remote 獨有的備註會被輾掉——所以先併成兩邊的聯集，
+        改寫的對象才是完整的。
+
+        併不起來就是同一個 commit 兩邊各寫了不同的東西，合併必須挑一邊；挑哪一邊是
+        人要決定的事，所以這裡拒絕整個異動，而不是替人挑一個。
+
+        回傳併進來的那幾筆。
+        """
+        if self._remote() is None:
+            return ()
+
+        self._fetch_once()
+        divergence = git.notes_divergence()
+        if not divergence.needs_uniting:
+            return ()
+
+        if not divergence.can_unite:
+            raise NoteError(
+                ERROR_ID.NOTES_CONFLICT,
+                detail=(
+                    f"有 {len(divergence.conflicting)} 筆對不起來，"
+                    "先 git notes merge origin/commits 決定要留哪一份，再改欄位"
+                ),
+            )
+
+        git.notes_unite()
+        return divergence.only_remote
+
     def rename_field(self, old_key: str, new_key: str) -> tuple[str, ...]:
         """把既有備註裡的欄位改名，回傳被改寫的那幾筆。
 
         宣告檔的 additionalProperties 是 false，所以改了宣告卻沒改備註，等於讓所有
         舊備註在下一次讀取時全部驗證失敗。改名是兩件事一起做，不是兩個步驟。
         """
+        self.unify_with_remote()
         return self._rewrite(
             lambda note: {new_key if key == old_key else key: value for key, value in note.items()},
             touches=lambda note: old_key in note,
@@ -259,6 +294,7 @@ class NoteController:
 
     def drop_field(self, key: str) -> tuple[str, ...]:
         """把欄位從既有備註裡拿掉，回傳被改寫的那幾筆。"""
+        self.unify_with_remote()
         return self._rewrite(
             lambda note: {name: value for name, value in note.items() if name != key},
             touches=lambda note: key in note,

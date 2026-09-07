@@ -53,9 +53,10 @@ def test_load_for_a_single_commit_keeps_it_even_when_noted(controller, git_repo,
 
 
 def test_load_reads_the_note_listing_once(controller, git_repo, commit, monkeypatch):
+    """一次列完，不是每個 commit 問一次。"""
     base = commit("feat: base")
     for index in range(10):
-        commit(f"feat: {index}")
+        controller.add({"type": "skip"}, commit(f"feat: {index}"))
     calls: list[tuple[str, ...]] = []
     original_run = git._run
 
@@ -65,7 +66,8 @@ def test_load_reads_the_note_listing_once(controller, git_repo, commit, monkeypa
 
     monkeypatch.setattr(git, "_run", counting_run)
     session.load(controller, f"{base}...master")
-    assert len([call for call in calls if call[:2] == ("notes", "list")]) == 1
+    listings = [call for call in calls if call[0] == "notes" and call[-1] == "list"]
+    assert len(listings) == 1
 
 
 # --- 批次寫入 ---
