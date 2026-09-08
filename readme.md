@@ -6,7 +6,7 @@
 ## 兩種用法
 
 ```sh
-gne init                # 問出這個 repo 的欄位（第一次才要）
+gne schema init         # 問出這個 repo 的欄位（第一次才要）
 gne v1.2.0...HEAD       # 開編輯器，列出這個區間裡自己還沒填的 commit
 gne                     # 同上，沿用上一次用過的區間
 gne list --format json  # 不進畫面，把資料倒出來
@@ -39,7 +39,7 @@ gne list --format json  # 不進畫面，把資料倒出來
 
 `Enter` 下一題，問完最後一題自動儲存；`Ctrl+S` 隨時儲存（後面沒答的保留原值）。答錯的那一題
 會當場說明並留在原地，你打的東西不會被丟掉。單行輸入框打不出第二行，所以**沒動過的多行舊值
-原樣保留**，要寫多行內容走 `gne set --from-stdin`。
+原樣保留**，要寫多行內容走 `gne note set --from-stdin`。
 
 回到問答就能直接打字：對話框關掉、或是點問答那一區的任何地方（問句、答過的那幾行都算），
 游標都會回到正在問的那一格，不必再去點準輸入框那一行。
@@ -96,6 +96,9 @@ gne list --format json  # 不進畫面，把資料倒出來
 | 兩者 | `Ctrl+C` `Ctrl+C` | 不儲存直接離開（連按兩次） |
 | 兩者 | `Ctrl+Shift+Q` | 離開（還有暫存時先問） |
 | 兩者 | `Ctrl+Shift+W` | 強制關閉（只有分得出這顆鍵的終端機） |
+
+`--read-only` 開起來的編輯器不接受任何會改東西的鍵：鍵還在、`Ctrl+H` 的清單上看得到，
+按下去會說是唯讀，而不是沒反應。換區間、看 commit 資訊、看 diff 都還在。
 | 兩者 | `Ctrl+R` | 改看哪一段 |
 | 兩者 | `Ctrl+D` | 改新備註的起點 |
 | 兩者 | `Ctrl+F` | 改欄位宣告 |
@@ -115,28 +118,35 @@ gne list --format json  # 不進畫面，把資料倒出來
 | `--author <email>` | 只列出這個人的 commit，預設是自己 |
 | `--all-authors` | 列出所有人的 commit |
 | `--include-noted` | 連已經有備註的 commit 也列出來 |
-| `--range <range>` | 指定 commit 區間，預設同 `gne list` |
+| `--range <range>` | 指定 commit 區間 |
 | `--ai-generated` | 在上面的篩選之上再收一次：只看 AI 產生、還沒人工確認的那些 |
 
 ## 子命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `gne show [<commit>] [--format text\|yaml\|json]` | 印出單一 commit 的備註 |
-| `gne list [<range>] [--filter all\|noted\|unnoted\|ai-generated] [--format text\|json]` | 列出區間內的 commit 與備註 |
-| `gne export [<range>] [-o <path>]` | 匯出 xlsx，預設檔名 `<branch>.xlsx` |
-| `gne init` | 問出這個專案的欄位，寫成 `.gne/note-schema.json`，已經有就不動它 |
-| `gne order [<key>…]` | 印出或重排欄位的顯示順序 |
-| `gne schema [--format text\|json]` | 印出欄位宣告 |
-| `gne set [<commit>] --<field> <value>…` | 逐欄寫入，未給的欄位保留原值 |
-| `gne set [<commit>] --from-stdin [--format yaml\|json]` | 從 stdin 覆寫整份備註 |
-| `gne set [<commit>] --ai-generated …` | 同上，但記下這是 AI 填的、待人工確認 |
-| `gne remove [<commit>]` | 刪除備註 |
-| `gne prune [--apply --yes]` | 移除每個欄位都空的備註 |
-| `gne backup [-o <path>]` | 傾印所有帶內容的備註 |
-| `gne push` | 把本機的 refs/notes 推到 remote |
+| `gne [<區間>\|<hash>]` | 開編輯器。`--read-only` 唯讀，看得到但改不了 |
+| `gne list [<range>] [--filter all\|noted\|unnoted\|ai-generated] [--format text\|json]` | 用文字列出區間內的 commit 與備註 |
+| `gne export [<range>] [-o <path>]` | 匯出 xlsx，預設檔名 `<branch>.xlsx`，不管填到什麼程度 |
+| `gne note show [<commit>] [--format text\|yaml\|json]` | 印出單一 commit 的備註 |
+| `gne note set [<commit>] --<field> <value>…` | 逐欄寫入，未給的欄位保留原值 |
+| `gne note set [<commit>] --from-stdin [--format yaml\|json]` | 從 stdin 覆寫整份備註 |
+| `gne note set [<commit>] --ai-generated …` | 同上，但記下這是 AI 填的、待人工確認 |
+| `gne note remove [<commit>]` | 刪除備註 |
+| `gne note prune [--apply --yes]` | 移除每個欄位都空的備註 |
+| `gne note backup [-o <path>]` | 傾印所有帶內容的備註 |
+| `gne note push` | 把本機的 refs/notes 推到 remote |
+| `gne schema show [--format text\|json]` | 印出欄位宣告 |
+| `gne schema init` | 問出這個專案的欄位，寫成 `.gne/note-schema.json` |
+| `gne schema order [<key>…]` | 印出或重排欄位的顯示順序 |
 
-全域 `--no-push` 讓異動不推送到 remote，批次填寫時建議加上，收尾再 `gne push` 推一次。
+編輯器沒有自己的子命令名字——`gne <區間>` 就是它，因為那是這個工具平常在做的事。
+其餘四個各管一件事：`list` 用文字看、`export` 輸出文件、`note` 逐條改備註、`schema` 改欄位宣告。
+
+**`gne note` 底下是編輯器的另一條路**：人在畫面上做得到的每一件事，這裡都有一條指令做得到，
+不進畫面、可接管線。給腳本與 AI 走的就是這一條。
+
+全域 `--no-push` 讓異動不推送到 remote，批次填寫時建議加上，收尾再 `gne note push` 推一次。
 
 `<range>` 給過一次就會被記住，之後省略它就是沿用上一次那一個；編輯器裡按 `Ctrl+R` 隨時換。
 第一次進來沒有可以沿用的區間時，編輯器會問，不是把你踢回命令列。記在 `.git/gne/range`——
@@ -146,7 +156,7 @@ gne list --format json  # 不進畫面，把資料倒出來
 ## 增修欄位
 
 `Ctrl+F` 在畫面上改，或直接改 `.gne/note-schema.json`（`GNE_SCHEMA` 可以指到別的路徑，
-就像 `GNE_ADVISOR` 指定顧問）。兩條路寫的是同一個檔。驗證規則、編輯器表單、`gne set` 的旗標、
+就像 `GNE_ADVISOR` 指定顧問）。兩條路寫的是同一個檔。驗證規則、編輯器表單、`gne note set` 的旗標、
 文字與 JSON 輸出、xlsx 表頭都由它衍生，`properties` 的出現順序就是顯示順序。
 
 **改欄位名或刪欄位不只是改宣告。** 宣告的 `additionalProperties` 是 `false`，既有備註裡
@@ -163,7 +173,7 @@ gne list --format json  # 不進畫面，把資料倒出來
 ```
 
 - `x-input`：`text` / `multiline` / `integer-list` / `choice`，決定值怎麼解析（`integer-list` 收逗號分隔的數字，`choice` 把可選值印在問題裡）。
-- `x-prompt`：**必填**，這個欄位該怎麼填。人在 `gne schema` 讀它，顧問收到的 `fields`
+- `x-prompt`：**必填**，這個欄位該怎麼填。人在 `gne schema show` 讀它，顧問收到的 `fields`
   裡也是同一份，填寫規則因此只有一處。沒有它的欄位沒人填得出來，所以宣告時漏了會當場報錯。
 - `x-choice-labels`：`choice` 欄位的中文標籤。
 - `x-item-url`：`integer-list` 每一項要展開成的網址。
@@ -171,11 +181,11 @@ gne list --format json  # 不進畫面，把資料倒出來
 - `x-ignore-when`：別的欄位變成什麼值時，這一欄就不必問了。
 - `x-follow-convention`：commit 前綴對得上可選值時就用它（只有 `choice` 欄位用得上）。
 
-順序就是 `properties` 的順序，要重排用 `gne order`——列出現有的每一個欄位，剛好一次：
+順序就是 `properties` 的順序，要重排用 `gne schema order`——列出現有的每一個欄位，剛好一次：
 
 ```sh
-gne order                                          # 現在的順序
-gne order type change_log redmine_ids spec_change  # 排成這樣
+gne schema order                                          # 現在的順序
+gne schema order type change_log redmine_ids spec_change  # 排成這樣
 ```
 
 漏掉的欄位不是「排在後面」而是會消失，所以部分清單會被擋下來。
@@ -239,7 +249,7 @@ gne list --filter ai-generated           # 不進畫面的檢視，可接管線
 `--ai-generated` 是在既有的作者篩選之上再收一次，所以預設看到的是「自己的」且「AI 填的」；
 要看別人的加 `--all-authors`。
 
-人工寫入本身就是確認：TUI 的表單依欄位重建整份備註，`gne set` 沒帶 `--ai-generated` 就是人在寫，
+人工寫入本身就是確認：TUI 的表單依欄位重建整份備註，`gne note set` 沒帶 `--ai-generated` 就是人在寫，
 記號在那一刻消失，不必另外下指令清除。
 
 最後一道防線是 [.githooks/pre-push](.githooks/pre-push)：帶著記號的備註推不上 remote。
@@ -249,7 +259,7 @@ gne list --filter ai-generated           # 不進畫面的檢視，可接管線
 
 跟哪個 remote 同步：`git config gne.remote <name>` 指定；沒設就用 `origin`，沒有 `origin`
 但只有一個 remote 就用那一個。**一個 remote 都沒有也完全能用**——備註寫在本機，
-`gne push` 會說沒有可以推的對象，其餘一切照常。remote 存在但連不上（VPN 沒開、機器關著）
+`gne note push` 會說沒有可以推的對象，其餘一切照常。remote 存在但連不上（VPN 沒開、機器關著）
 時取回失敗只是一則說明，不會擋住你把手上這幾筆填完；推送則仍然會失敗，因為那件事真的沒做到。
 
 取回走的是 git 對分支的那一套：remote 的備註取到 `refs/notes/origin/commits`（remote-tracking
@@ -267,7 +277,7 @@ ref），本機那一份不會被它蓋掉，所以**本機有還沒推的備註
 
 `refs/notes` 是單一個 ref，所以任何一次推送都會把本機所有備註送上 remote，包含還沒確認的那些。
 記號跟著備註走，別人 `gne --ai-generated` 一樣看得到，所以這不會弄丟資訊——但要「確認完才公開」就得
-在填寫時一路 `--no-push`，等審閱完再 `gne push`。
+在填寫時一路 `--no-push`，等審閱完再 `gne note push`。
 
 ## 新備註從哪裡開始
 
@@ -321,7 +331,7 @@ PYTHONPATH=src lint-imports   # 2 kept, 0 broken
 ./install_dev_env.sh          # 建 .venv，以 editable 模式裝進去
 ```
 
-裝完在要標註的那個 repo 裡跑一次 `gne init`。它不塞一份現成的欄位給你——開一個空的
+裝完在要標註的那個 repo 裡跑一次 `gne schema init`。它不塞一份現成的欄位給你——開一個空的
 欄位一覽問你要記什麼，用的是跟 `Ctrl+F` 一樣的表單：
 
 ```

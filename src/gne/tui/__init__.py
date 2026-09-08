@@ -15,6 +15,7 @@ def run_editor(
     ai_only: bool = False,
     only: str | None = None,
     push: bool = True,
+    read_only: bool = False,
 ) -> None:
     GneApp(
         controller,
@@ -24,6 +25,7 @@ def run_editor(
         ai_only=ai_only,
         only=only,
         push=push,
+        read_only=read_only,
     ).run()
 
 

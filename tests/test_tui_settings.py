@@ -358,3 +358,64 @@ async def test_init_will_not_produce_a_declaration_with_no_fields(git_repo, monk
         await pilot.press("ctrl+s")
         await pilot.pause()
         assert isinstance(setup.screen, FieldsScreen), "收不下，留在原地"
+
+
+# --- 唯讀：看得到，改不了 ---
+
+
+async def test_read_only_refuses_to_start_editing(controller, git_repo, commit):
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master", read_only=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.editing is False
+
+
+async def test_read_only_refuses_the_default_fill(controller, git_repo, commit):
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master", read_only=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.state.pending_count == 0
+
+
+async def test_read_only_refuses_the_settings_screens(controller, git_repo, commit):
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master", read_only=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("ctrl+f")
+        await pilot.pause()
+        assert not isinstance(app.screen, FieldsScreen)
+        await pilot.press("ctrl+d")
+        await pilot.pause()
+        assert not isinstance(app.screen, DefaultNoteScreen)
+
+
+async def test_read_only_still_lets_you_look_around(controller, git_repo, commit):
+    """唯讀不是把功能拿掉：換區間、看 commit 資訊都還在。"""
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master", read_only=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert isinstance(app.screen, RangeScreen)
+
+
+async def test_the_shortcut_list_says_why_those_keys_do_nothing(controller, git_repo, commit):
+    """按了才發現做不了，不如在清單上就看得出來。"""
+    base = commit("feat: base")
+    commit("feat: 一")
+    app = editor(controller, f"{base}...master", read_only=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        assert app.unavailable_keys()["request_save"] == app.READ_ONLY_REASON

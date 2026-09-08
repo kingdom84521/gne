@@ -130,8 +130,10 @@ class GneApp(App[None]):
         ai_only: bool = False,
         only: str | None = None,
         push: bool = True,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
+        self._read_only = read_only
         self._controller = controller
         self._revision_range = revision_range
         self._author_email = author_email
@@ -162,6 +164,8 @@ class GneApp(App[None]):
         return keys.spelled_out(binding)
 
     def on_mount(self) -> None:
+        if self._read_only:
+            self.sub_title = self.READ_ONLY_REASON
         pane = self.commit_pane
         pane.styles.width = self.commit_list.required_width + pane.gutter.width
         self.reload_commits()
@@ -302,6 +306,22 @@ class GneApp(App[None]):
         if self._only is not None and loaded.commits:
             self.action_start_edit()
 
+    # --- 唯讀 ---
+
+    READ_ONLY_REASON = "唯讀"
+    READ_ONLY_NOTICE = "唯讀模式：這個動作會改東西，所以做不了。"
+
+    def _refused_while_read_only(self) -> bool:
+        """會改東西的動作都先問過這裡。
+
+        唯讀不是把鍵拿掉：鍵還在、清單上看得到、按下去會說為什麼——不然人只會覺得
+        壞了。ctrl+h 的清單也把這幾條標成暗的。
+        """
+        if not self._read_only:
+            return False
+        self.notify(self.READ_ONLY_NOTICE, severity="warning")
+        return True
+
     # --- 專案自己的設定：區間、起點、欄位 ---
 
     def action_change_range(self) -> None:
@@ -323,6 +343,8 @@ class GneApp(App[None]):
         self.reload_commits()
 
     def action_edit_default_note(self) -> None:
+        if self._refused_while_read_only():
+            return
         try:
             current = defaults.default_note()
         except (schema.NoteValidationError, schema.SchemaNotDeclared) as error:
@@ -342,6 +364,8 @@ class GneApp(App[None]):
         self.reload_commits()
 
     def action_edit_fields(self) -> None:
+        if self._refused_while_read_only():
+            return
         try:
             document = schema.load_schema()
         except (schema.SchemaNotDeclared, schema.SchemaDeclarationError) as error:
@@ -400,6 +424,8 @@ class GneApp(App[None]):
 
     def action_start_edit(self) -> None:
         """先讓問答顯示出來再開始問：Textual 不能把焦點放在看不見的 widget 上。"""
+        if self._refused_while_read_only():
+            return
         revision = self.selected_hash
         if revision is None:
             return
@@ -447,6 +473,8 @@ class GneApp(App[None]):
         絕大多數的備註是「知道有這筆 commit、它不進 release note」，那個值 .gne/default-note
         與 commit 標題就說得出來，逐題按過去只是手續。
         """
+        if self._refused_while_read_only():
+            return
         revision = self.selected_hash
         if revision is None:
             return
@@ -461,6 +489,8 @@ class GneApp(App[None]):
         ]
 
     def action_accept_all(self) -> None:
+        if self._refused_while_read_only():
+            return
         waiting = self._acceptable()
         if not waiting:
             self.notify("沒有可以填的：列表上的每一筆都已經有備註或已經編輯過了。")
@@ -481,6 +511,8 @@ class GneApp(App[None]):
 
     def action_ask_advice(self) -> None:
         """對話框先開起來再去問：問一次要幾十秒，不能讓畫面沒有反應。"""
+        if self._refused_while_read_only():
+            return
         revision = self.selected_hash
         commit = self.state.commit_of(revision) if revision else None
         if commit is None:
@@ -513,6 +545,8 @@ class GneApp(App[None]):
     # --- 寫入 ---
 
     def action_save_all(self) -> None:
+        if self._refused_while_read_only():
+            return
         if self.state.pending_count == 0:
             self.notify("沒有待寫入的備註。")
             return
@@ -616,8 +650,23 @@ class GneApp(App[None]):
             )
         )
 
+    WRITING_ACTIONS = (
+        "select",
+        "request_accept",
+        "request_accept_all",
+        "request_save",
+        "request_advice",
+        "edit_default_note",
+        "edit_fields",
+    )
+
     def unavailable_keys(self) -> dict[str, str]:
-        """現在按了也做不了事的鍵。問顧問要先有顧問可問——GNE_ADVISOR 沒設就是沒有。"""
+        """現在按了也做不了事的鍵。
+
+        問顧問要先有顧問可問——GNE_ADVISOR 沒設就是沒有。唯讀時則是每一顆會改東西的鍵。
+        """
+        if self._read_only:
+            return {action: self.READ_ONLY_REASON for action in self.WRITING_ACTIONS}
         return {} if advisor.configured() else {"request_advice": "未設定"}
 
     # --- 詳情 ---

@@ -56,13 +56,16 @@ def test_the_new_field_reaches_the_field_table(declared_trial_field):
     assert schema.field_by_key()[TRIAL_KEY].title == "試驗欄位"
 
 
+def flags_of(*path: str) -> set[str]:
+    """走進巢狀的子命令，收那一層掛著的旗標。"""
+    parser = cli.build_parser()
+    for name in path:
+        parser = parser._subparsers._group_actions[0].choices[name]
+    return {option for action in parser._actions for option in action.option_strings}
+
+
 def test_the_new_field_reaches_the_cli_flags(declared_trial_field):
-    flags = {
-        option
-        for action in cli.build_parser()._subparsers._group_actions[0].choices["set"]._actions
-        for option in action.option_strings
-    }
-    assert TRIAL_FLAG in flags
+    assert TRIAL_FLAG in flags_of("note", "set")
 
 
 def test_the_new_field_reaches_the_schema_listing(declared_trial_field):
@@ -102,8 +105,8 @@ def capsys_free_show():
 def test_the_new_field_can_be_written_and_read_back(declared_trial_field, git_repo, commit, monkeypatch):
     monkeypatch.setattr(cli, "DEFAULT_FETCH", False)
     commit()
-    assert cli.main(["--no-push", "set", "--type", "feat", TRIAL_FLAG, "寫進去了"]) == 0
-    assert cli.main(["--no-push", "show", "--format", "json"]) == 0
+    assert cli.main(["--no-push", "note", "set", "--type", "feat", TRIAL_FLAG, "寫進去了"]) == 0
+    assert cli.main(["--no-push", "note", "show", "--format", "json"]) == 0
     written = capsys_free_show()
     assert written[TRIAL_KEY] == "寫進去了"
 

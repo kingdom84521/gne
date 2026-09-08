@@ -16,20 +16,23 @@ from .core.entity import ERROR_ID, NoteController, NoteError, NoteSyncError
 
 DEFAULT_FETCH = True
 
-SUBCOMMANDS = (
-    "init",
-    "order",
-    "edit",
-    "show",
-    "list",
-    "export",
-    "schema",
-    "set",
-    "remove",
-    "prune",
-    "backup",
-    "push",
-)
+EDITOR_USAGE = """開編輯器（沒有子命令名字，這就是 gne 平常在做的事）：
+
+  gne                       沿用上一次用過的區間
+  gne <區間>                例如 gne v1.2.0...HEAD；給過一次就會被記住
+  gne <hash>                只編輯這一筆
+
+  --read-only               唯讀：看得到全部，改不了任何東西
+  --all-authors             列出所有人的 commit，預設只有自己的
+  --author <email>          只列這個人的
+  --include-noted           連已經有備註的也列出來
+  --ai-generated            只列 AI 填了、還沒有人工確認的那些
+"""
+
+EDITOR_COMMAND = "edit"
+"""編輯器 parser 的內部名字。使用者打的是 `gne <區間>`，不是這個。"""
+
+SUBCOMMANDS = ("export", "list", "note", "schema")
 
 MISSING_COMMIT = "（這個 commit 不在本地 repository）"
 
@@ -39,8 +42,8 @@ GLOBAL_FLAGS = frozenset({"-h", "--help", "--no-push"})
 
 HEADLESS_ADVICE = (
     "互動式編輯器需要終端機，目前沒有。\n"
-    "改用不進 TUI 的子命令：gne show / gne list / gne set / gne remove。\n"
-    "欄位與可用旗標請看 gne schema。"
+    "不進畫面也做得到：gne list 看有哪些、gne note show 看一筆、gne note set 寫一筆。\n"
+    "欄位與可用旗標請看 gne schema show。"
 )
 
 
@@ -68,70 +71,97 @@ def run_editor(controller: NoteController, **arguments: object) -> None:
 
 
 def _normalise(argv: Sequence[str]) -> list[str]:
-    """讓 `gne`、`gne <hash>` 與 `gne --all-authors` 這幾種舊用法都導向編輯器。
+    """`gne`、`gne <區間>`、`gne <hash>`、`gne --all-authors` 都是開編輯器。
 
-    插入點是第一個不是全域旗標的引數：編輯器自己的旗標得排在 edit 之後，
-    否則會被頂層 parser 當成不認得的引數擋下來。
+    編輯器沒有對外的名字，所以第一個不是全域旗標的引數若不是某個子命令，就是要開
+    編輯器——在那個位置補上內部名字。補在那個位置而不是最前面：編輯器自己的旗標得
+    排在它後面，否則會被頂層 parser 當成不認得的引數擋下來。
     """
     result = list(argv)
     index = 0
     while index < len(result) and result[index] in GLOBAL_FLAGS:
         index += 1
     if index == len(result) or result[index] not in SUBCOMMANDS:
-        result.insert(index, "edit")
+        result.insert(index, EDITOR_COMMAND)
     return result
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="gne", description="git note 編輯與匯出")
+    """五個入口：編輯器、export、list、note、schema。
+
+    編輯器沒有自己的名字——`gne <區間>` 就是它，因為那是這個工具平常在做的事。
+    其餘四個各管一件事：輸出文件、用文字看、逐條改備註、改欄位宣告。人在編輯器裡
+    做得到的每一件事，`gne note` 底下都有一條指令做得到，那條路是給腳本與 AI 走的。
+    """
+    parser = argparse.ArgumentParser(
+        prog="gne",
+        description="git note 編輯與匯出",
+        epilog=EDITOR_USAGE,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--no-push",
         action="store_true",
-        help="異動後不推送 refs/notes 到 origin（批次填寫時建議開啟）",
+        help="異動後不推送 refs/notes（批次填寫時建議開啟）",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
 
-    editor = subparsers.add_parser("edit", help="開啟互動式編輯器")
-    editor.add_argument("commit", nargs="?", default=None, help="只編輯這一筆，省略則列出待填的 commit")
-    editor.add_argument("--range", default=None, help="要列出的 commit 區間，預設同 gne list")
+    _add_editor(subparsers)
+
+    exporter = subparsers.add_parser("export", help="把區間匯出成 xlsx，不管填到什麼程度")
+    exporter.add_argument("range", nargs="?", default=None)
+    exporter.add_argument("-o", "--output", default=None)
+
+    lister = subparsers.add_parser("list", help="用文字列出區間內的 commit 與備註")
+    lister.add_argument("range", nargs="?", default=None)
+    lister.add_argument(
+        "--filter",
+        choices=("all", "noted", "unnoted", "ai-generated"),
+        default="all",
+        help="all 全部｜noted 已經有備註的｜unnoted 還沒填的｜ai-generated AI 填了待確認的",
+    )
+    lister.add_argument("--format", choices=("text", "json"), default="text")
+
+    _add_note_commands(subparsers)
+    _add_schema_commands(subparsers)
+
+    return parser
+
+
+def _add_editor(subparsers: argparse._SubParsersAction) -> None:
+    """編輯器的旗標。這個 parser 沒有對外的名字，由 _normalise 導過來。"""
+    # 不給 help：argparse 只把有 help 的子命令列進說明，所以這一個 parse 得動、
+    # 但不會出現在 gne --help 的清單上。使用者看到的入口就是 `gne <區間>`。
+    editor = subparsers.add_parser(EDITOR_COMMAND)
+    editor.add_argument(
+        "commit", nargs="?", default=None, help="只編輯這一筆，省略則列出待填的 commit"
+    )
+    editor.add_argument("--range", default=None, help="要列出的 commit 區間")
     editor.add_argument("--author", default=None, help="只列出這個 email 的 commit，預設是自己")
     editor.add_argument("--all-authors", action="store_true", help="列出所有人的 commit")
-    editor.add_argument("--include-noted", action="store_true", help="連已經有備註的 commit 也列出來")
+    editor.add_argument("--include-noted", action="store_true", help="連已經有備註的也列出來")
     editor.add_argument(
         "--ai-generated",
         action="store_true",
         help="只列出 AI 產生、還沒有人工確認的那些（儲存這一筆就等於確認）",
     )
+    editor.add_argument(
+        "--read-only",
+        action="store_true",
+        help="唯讀：看得到全部，但改不了任何東西，也不會推送",
+    )
 
-    shower = subparsers.add_parser("show", help="印出單一 commit 的備註")
+
+def _add_note_commands(subparsers: argparse._SubParsersAction) -> None:
+    """人在編輯器裡做的事，一條指令一件。這條路不進畫面，給腳本與 AI 用。"""
+    notes = subparsers.add_parser("note", help="逐條讀寫備註（不進畫面）")
+    actions = notes.add_subparsers(dest="note_command", required=True, metavar="<action>")
+
+    shower = actions.add_parser("show", help="印出單一 commit 的備註")
     shower.add_argument("commit", nargs="?", default="HEAD")
     shower.add_argument("--format", choices=("text", "yaml", "json"), default="text")
 
-    lister = subparsers.add_parser("list", help="列出區間內的 commit 與其備註")
-    lister.add_argument("range", nargs="?", default=None)
-    lister.add_argument(
-        "--filter", choices=("all", "noted", "unnoted", "ai-generated"), default="all"
-    )
-    lister.add_argument("--format", choices=("text", "json"), default="text")
-
-    exporter = subparsers.add_parser("export", help="把區間匯出成 xlsx")
-    exporter.add_argument("range", nargs="?", default=None)
-    exporter.add_argument("-o", "--output", default=None)
-
-    subparsers.add_parser("init", help="問幾題，建立這個 repo 的欄位宣告")
-
-    orderer = subparsers.add_parser("order", help="欄位的顯示順序")
-    orderer.add_argument(
-        "keys",
-        nargs="*",
-        metavar="KEY",
-        help="照這個順序重排。不給就印出現在的順序。",
-    )
-
-    describer = subparsers.add_parser("schema", help="印出欄位宣告")
-    describer.add_argument("--format", choices=("text", "json"), default="text")
-
-    setter = subparsers.add_parser("set", help="不進 TUI 直接寫入備註")
+    setter = actions.add_parser("set", help="寫入備註，未給的欄位保留原值")
     setter.add_argument("commit", nargs="?", default="HEAD")
     setter.add_argument("--from-stdin", action="store_true", help="從 stdin 讀入整份備註並覆寫")
     setter.add_argument("--format", choices=("yaml", "json"), default="yaml")
@@ -149,19 +179,36 @@ def build_parser() -> argparse.ArgumentParser:
             help=f"{field.title}（{field.input}）",
         )
 
-    remover = subparsers.add_parser("remove", help="刪除某個 commit 的備註")
+    remover = actions.add_parser("remove", help="刪除某個 commit 的備註")
     remover.add_argument("commit", nargs="?", default="HEAD")
 
-    pruner = subparsers.add_parser("prune", help="移除每個欄位都空的備註")
+    pruner = actions.add_parser("prune", help="移除每個欄位都空的備註")
     pruner.add_argument("--apply", action="store_true", help="真的移除，預設只列出")
     pruner.add_argument("--yes", action="store_true", help="確認已備份，允許 --apply 動手")
 
-    backer = subparsers.add_parser("backup", help="傾印所有帶內容的備註")
+    backer = actions.add_parser("backup", help="傾印所有帶內容的備註")
     backer.add_argument("-o", "--output", default=None)
 
-    subparsers.add_parser("push", help="把本機的 refs/notes 推到 origin")
+    actions.add_parser("push", help="把本機的 refs/notes 推上去")
 
-    return parser
+
+def _add_schema_commands(subparsers: argparse._SubParsersAction) -> None:
+    """欄位宣告的一切都在這底下：有哪些欄位、怎麼問、什麼順序。"""
+    declaration = subparsers.add_parser("schema", help="欄位宣告")
+    actions = declaration.add_subparsers(dest="schema_command", required=True, metavar="<action>")
+
+    shower = actions.add_parser("show", help="印出欄位宣告")
+    shower.add_argument("--format", choices=("text", "json"), default="text")
+
+    actions.add_parser("init", help="問出這個 repo 要記哪些欄位")
+
+    orderer = actions.add_parser("order", help="欄位的顯示順序")
+    orderer.add_argument(
+        "keys",
+        nargs="*",
+        metavar="KEY",
+        help="照這個順序重排。不給就印出現在的順序。",
+    )
 
 
 def collect_rows(
@@ -208,10 +255,18 @@ def _run_edit(controller: NoteController, options: argparse.Namespace) -> int:
         print(HEADLESS_ADVICE, file=sys.stderr)
         return 1
 
+    # 唯讀不寫東西，也就沒有東西要推。
+    push = not (options.no_push or options.read_only)
+
     if options.commit is not None:
         if not git.commit_exists(options.commit):
             raise NoteError(ERROR_ID.COMMIT_NOT_FOUND, options.commit)
-        run_editor(controller, only=git.resolve_commit(options.commit), push=not options.no_push)
+        run_editor(
+            controller,
+            only=git.resolve_commit(options.commit),
+            push=push,
+            read_only=options.read_only,
+        )
         return 0
 
     run_editor(
@@ -220,7 +275,8 @@ def _run_edit(controller: NoteController, options: argparse.Namespace) -> int:
         author_email=_edit_author(options),
         unnoted_only=not options.include_noted,
         ai_only=options.ai_generated,
-        push=not options.no_push,
+        push=push,
+        read_only=options.read_only,
     )
     return 0
 
@@ -350,13 +406,13 @@ def _attributed(
 def _push_after_write(options: argparse.Namespace) -> bool:
     """這次的寫入要不要順手推送。
 
-    edit 的推送時機由編輯器自己掌握：批次寫入完推一次，逐筆自動推送會讓一次儲存
+    編輯器的推送時機由它自己掌握：批次寫入完推一次，逐筆自動推送會讓一次儲存
     推 N 次。AI 產生的備註則是根本推不上去（未確認的記號擋在 pre-push），試一次
     註定失敗的推送只會多一則錯誤訊息。
     """
-    if options.no_push or options.command == "edit":
+    if options.no_push or options.command == EDITOR_COMMAND:
         return False
-    return not (options.command == "set" and options.ai_generated)
+    return not (_handler_key(options) == "note.set" and options.ai_generated)
 
 
 def _run_push(controller: NoteController, _: argparse.Namespace) -> int:
@@ -422,19 +478,28 @@ def _run_backup(controller: NoteController, options: argparse.Namespace) -> int:
 
 
 _HANDLERS = {
-    "init": _run_init,
-    "order": _run_order,
-    "edit": _run_edit,
-    "show": _run_show,
-    "list": _run_list,
+    EDITOR_COMMAND: _run_edit,
     "export": _run_export,
-    "schema": _run_schema,
-    "set": _run_set,
-    "remove": _run_remove,
-    "prune": _run_prune,
-    "backup": _run_backup,
-    "push": _run_push,
+    "list": _run_list,
+    "note.show": _run_show,
+    "note.set": _run_set,
+    "note.remove": _run_remove,
+    "note.prune": _run_prune,
+    "note.backup": _run_backup,
+    "note.push": _run_push,
+    "schema.show": _run_schema,
+    "schema.init": _run_init,
+    "schema.order": _run_order,
 }
+
+
+def _handler_key(options: argparse.Namespace) -> str:
+    """有 sub-subcommand 的分兩段查。"""
+    if options.command == "note":
+        return f"note.{options.note_command}"
+    if options.command == "schema":
+        return f"schema.{options.schema_command}"
+    return options.command
 
 
 def _report_sync(controller: NoteController, code: int) -> int:
@@ -460,7 +525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        return _report_sync(controller, _HANDLERS[options.command](controller, options))
+        return _report_sync(controller, _HANDLERS[_handler_key(options)](controller, options))
     except (
         NoteError,
         NoteSyncError,
