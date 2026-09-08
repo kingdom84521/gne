@@ -2,7 +2,7 @@ from .commit_detail import CommitDetailScreen
 from .commit_info import CommitInfoScreen
 from .confirm import ConfirmScreen
 from .default_note import DefaultNoteScreen
-from .fields import FieldDraft, FieldPlan, FieldsScreen
+from .fields import FieldsScreen
 from .range import RangeScreen
 from .shortcuts import ShortcutsScreen
 from .suggestion import SuggestionScreen
@@ -14,8 +14,6 @@ __all__ = [
     "ConfirmScreen",
     "DefaultNoteScreen",
     "Dialog",
-    "FieldDraft",
-    "FieldPlan",
     "FieldsScreen",
     "RangeScreen",
     "ShortcutsScreen",

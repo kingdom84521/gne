@@ -201,8 +201,11 @@ def resolve_range(given: str | None) -> str:
         return remembered
 
     raise RangeNotGiven(
-        "沒有指定區間，這個 clone 也還沒用過任何區間。\n"
-        "先給一次（例如 gne list v1.2.0...HEAD），之後就會沿用上一次用過的那一個。"
+        "說不出要看哪一段。給它一個起點，任一種都行：\n"
+        "　命令列　gne v1.2.0...HEAD\n"
+        "　檔案　　gne --from-file VERSION\n"
+        "　環境　　export GNE_FROM=v1.2.0\n"
+        "給過一次之後，這個 clone 就會沿用上一次用過的那一個。"
     )
 
 

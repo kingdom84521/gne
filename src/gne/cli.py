@@ -6,22 +6,24 @@
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from . import export, render
-from .core import git, provenance, schema
+from .core import fields, git, provenance, revisions, schema
 from .core.entity import ERROR_ID, NoteController, NoteError, NoteSyncError
+from .core.fields import INPUT_KINDS, FieldDraft, FieldPlan, draft_of, read_pairs
 
 DEFAULT_FETCH = True
 
 EDITOR_USAGE = """開編輯器（沒有子命令名字，這就是 gne 平常在做的事）：
 
-  gne                       沿用上一次用過的區間
-  gne <區間>                例如 gne v1.2.0...HEAD；給過一次就會被記住
+  gne                       區間由 GNE_FROM / GNE_TO 或上一次用過的決定
+  gne <區間>                例如 gne v1.2.0...HEAD
   gne <hash>                只編輯這一筆
 
+  --from-file / --to-file   從檔案讀區間的兩端
   --read-only               唯讀：看得到全部，改不了任何東西
   --all-authors             列出所有人的 commit，預設只有自己的
   --author <email>          只列這個人的
@@ -106,13 +108,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
 
-    _add_editor(subparsers)
+    ranged = _range_sources()
+    _add_editor(subparsers, ranged)
 
-    exporter = subparsers.add_parser("export", help="把區間匯出成 xlsx，不管填到什麼程度")
+    exporter = subparsers.add_parser(
+        "export", help="把區間匯出成 xlsx，不管填到什麼程度", parents=[ranged]
+    )
     exporter.add_argument("range", nargs="?", default=None)
     exporter.add_argument("-o", "--output", default=None)
 
-    lister = subparsers.add_parser("list", help="用文字列出區間內的 commit 與備註")
+    lister = subparsers.add_parser(
+        "list", help="用文字列出區間內的 commit 與備註", parents=[ranged]
+    )
     lister.add_argument("range", nargs="?", default=None)
     lister.add_argument(
         "--filter",
@@ -128,15 +135,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_editor(subparsers: argparse._SubParsersAction) -> None:
+def _range_sources() -> argparse.ArgumentParser:
+    """區間兩端可以從哪裡來。吃區間的入口共用這一組。"""
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument(
+        "--from-file", default=None, metavar="PATH", help="從這個檔案讀區間的起點"
+    )
+    shared.add_argument(
+        "--to-file", default=None, metavar="PATH", help="從這個檔案讀區間的終點"
+    )
+    shared.add_argument(
+        "--yes",
+        action="store_true",
+        help="有設定被更高位階的值蓋掉時不要問，照著做",
+    )
+    return shared
+
+
+def _add_editor(subparsers: argparse._SubParsersAction, ranged: argparse.ArgumentParser) -> None:
     """編輯器的旗標。這個 parser 沒有對外的名字，由 _normalise 導過來。"""
     # 不給 help：argparse 只把有 help 的子命令列進說明，所以這一個 parse 得動、
     # 但不會出現在 gne --help 的清單上。使用者看到的入口就是 `gne <區間>`。
-    editor = subparsers.add_parser(EDITOR_COMMAND)
+    editor = subparsers.add_parser(EDITOR_COMMAND, parents=[ranged])
     editor.add_argument(
-        "commit", nargs="?", default=None, help="只編輯這一筆，省略則列出待填的 commit"
+        "target",
+        nargs="?",
+        default=None,
+        help="要看的區間（a...b），或單獨一個 hash 只編輯那一筆",
     )
-    editor.add_argument("--range", default=None, help="要列出的 commit 區間")
     editor.add_argument("--author", default=None, help="只列出這個 email 的 commit，預設是自己")
     editor.add_argument("--all-authors", action="store_true", help="列出所有人的 commit")
     editor.add_argument("--include-noted", action="store_true", help="連已經有備註的也列出來")
@@ -210,6 +236,110 @@ def _add_schema_commands(subparsers: argparse._SubParsersAction) -> None:
         help="照這個順序重排。不給就印出現在的順序。",
     )
 
+    adder = actions.add_parser("add", help="加一個欄位")
+    adder.add_argument("key", help="備註裡的鍵，例如 change_log")
+    _add_field_flags(adder, required_prompt=True)
+
+    editor = actions.add_parser("edit", help="改一個欄位，沒給的旗標保持原樣")
+    editor.add_argument("key")
+    editor.add_argument("--rename", default=None, metavar="NEW_KEY", help="改欄位名")
+    _add_field_flags(editor, required_prompt=False)
+
+    remover = actions.add_parser("remove", help="刪一個欄位")
+    remover.add_argument("key")
+    remover.add_argument("--apply", action="store_true", help="真的刪，預設只說會影響什麼")
+    remover.add_argument("--yes", action="store_true", help="確認已備份，允許 --apply 動手")
+
+
+def _add_field_flags(parser: argparse.ArgumentParser, *, required_prompt: bool) -> None:
+    """一個欄位宣告得起來的每一件事，這裡都要有旗標。
+
+    畫面上的表單收得下宣告檔的每一個關鍵字，命令列就不能只收一半——兩條路做得到的
+    事一樣多，才輪得到人選走哪一條。成對的東西沿用表單的寫法：`feat=功能, fix=錯誤`。
+    """
+    parser.add_argument("--title", default=None, help="畫面上顯示的名字，預設用欄位名")
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        required=required_prompt,
+        help="填寫指示，人與 AI 讀的是同一份",
+    )
+    parser.add_argument(
+        "--input", choices=INPUT_KINDS, default=None, help="輸入型別，預設 text"
+    )
+    parser.add_argument("--choices", default=None, metavar="值=標籤,…", help="choice 的可選值")
+    parser.add_argument("--item-url", default=None, help="integer-list 每一項展開成的網址")
+    parser.add_argument(
+        "--ignore-when", default=None, metavar="欄位=值,…", help="什麼時候不問這一欄"
+    )
+    parser.add_argument(
+        "--required", action=argparse.BooleanOptionalAction, default=None, help="必填"
+    )
+    parser.add_argument(
+        "--human-only", action=argparse.BooleanOptionalAction, default=None, help="AI 填不進去"
+    )
+    parser.add_argument(
+        "--follow-convention",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="commit 前綴對得上可選值時就用它（choice 才有）",
+    )
+
+
+def _confirm_shadowing(warning: str, *, assume_yes: bool) -> None:
+    """低位階的設定被蓋掉時先講、再問。
+
+    會走到這裡的通常是「我明明設了 GNE_FROM」那種情況：值本身沒錯，錯的是有人以為
+    自己設定生效了。所以不安靜地照做，也不直接停手——講清楚誰蓋掉誰，讓人決定。
+    """
+    print(warning, file=sys.stderr)
+
+    if assume_yes:
+        return
+    if not sys.stdin.isatty():
+        raise render.InputError("有設定被蓋掉了，非互動時不會替你決定：確認過就加上 --yes。")
+
+    answer = input("要照上面選的值繼續嗎？[y/N] ").strip().lower()
+    if answer not in ("y", "yes"):
+        raise render.InputError("停手了。")
+
+
+def _range_from_sources(options: argparse.Namespace, given: str | None) -> str | None:
+    """三種來源說出來的區間，都沒說話就回 None。
+
+    兩端各自走「命令列 > 參數指定的檔案 > 環境變數」，所以 `GNE_FROM` 設好之後
+    `gne` 不帶任何東西也會動。低位階的來源被蓋掉時會先問過人。
+
+    只講得出起點時終點就是 HEAD——沒有人想為了「從某個版本到現在」多打一次 HEAD。
+
+    上一次用過的那一個不算來源：它是這台機器的記憶，不是誰的設定，所以它被蓋掉時
+    不會叫住你。三種來源都沒說話時才輪到它（見 git.resolve_range）。
+    """
+    ends = revisions.split_range(given) if given else None
+    resolutions = [
+        revisions.resolve_end(
+            "起點", ends[0] if ends else None, options.from_file, revisions.FROM_ENV
+        ),
+        revisions.resolve_end(
+            "終點", ends[1] if ends else None, options.to_file, revisions.TO_ENV
+        ),
+    ]
+
+    warning = revisions.shadowing_warning(resolutions)
+    if warning:
+        _confirm_shadowing(warning, assume_yes=options.yes)
+
+    start, end = (resolution.value for resolution in resolutions)
+    if start:
+        return revisions.compose(start, end or "HEAD")
+    # 不是 a...b 的形狀（例如 `a..b`）就原樣交給 git。
+    return given
+
+
+def _resolved_range(options: argparse.Namespace, given: str | None) -> str:
+    """不進畫面的那些指令要有區間才做得了事，所以這裡解不出來就報錯。"""
+    return git.resolve_range(_range_from_sources(options, given))
+
 
 def collect_rows(
     controller: NoteController, revision_range: str, note_filter: str
@@ -257,13 +387,17 @@ def _run_edit(controller: NoteController, options: argparse.Namespace) -> int:
 
     # 唯讀不寫東西，也就沒有東西要推。
     push = not (options.no_push or options.read_only)
+    target = options.target
 
-    if options.commit is not None:
-        if not git.commit_exists(options.commit):
-            raise NoteError(ERROR_ID.COMMIT_NOT_FOUND, options.commit)
+    # 一個 hash 是「只編這一筆」，a...b 是「看這一段」。同一個位置收兩種東西，
+    # 因為使用者打的就是這兩種，不該為了分辨而多一個旗標。
+    single = target if target and revisions.split_range(target) is None else None
+    if single is not None:
+        if not git.commit_exists(single):
+            raise NoteError(ERROR_ID.COMMIT_NOT_FOUND, single)
         run_editor(
             controller,
-            only=git.resolve_commit(options.commit),
+            only=git.resolve_commit(single),
             push=push,
             read_only=options.read_only,
         )
@@ -271,7 +405,8 @@ def _run_edit(controller: NoteController, options: argparse.Namespace) -> int:
 
     run_editor(
         controller,
-        revision_range=options.range,
+        # 編輯器解不出區間時是問，不是報錯——所以這裡容許 None（見 app 的 RangeScreen）。
+        revision_range=_range_from_sources(options, target),
         author_email=_edit_author(options),
         unnoted_only=not options.include_noted,
         ai_only=options.ai_generated,
@@ -293,7 +428,7 @@ def _run_show(controller: NoteController, options: argparse.Namespace) -> int:
 
 
 def _run_list(controller: NoteController, options: argparse.Namespace) -> int:
-    revision_range = git.resolve_range(options.range)
+    revision_range = _resolved_range(options, options.range)
     rows = collect_rows(controller, revision_range, options.filter)
     if options.format == "json":
         print(render.rows_as_json(rows))
@@ -306,7 +441,7 @@ def _run_list(controller: NoteController, options: argparse.Namespace) -> int:
 
 
 def _run_export(controller: NoteController, options: argparse.Namespace) -> int:
-    revision_range = git.resolve_range(options.range)
+    revision_range = _resolved_range(options, options.range)
     rows = collect_rows(controller, revision_range, "all")
     target = Path(options.output or f"{git.current_branch()}.xlsx")
     export.write_workbook(export.build_workbook(rows), target)
@@ -345,6 +480,123 @@ def _run_init(_: NoteController, __: argparse.Namespace) -> int:
 
     written = schema.save_schema(plan.document)
     print(f"已建立 {written}。之後改欄位用 gne edit 裡的 ctrl+f。", file=sys.stderr)
+    return 0
+
+
+def _drafted(options: argparse.Namespace, base: FieldDraft | None) -> FieldDraft:
+    """把命令列給的旗標套到欄位上。沒給的旗標保持原樣——edit 只改你指名的東西。"""
+    starting = base or FieldDraft(key=options.key, title="", prompt="", input="text")
+
+    def chosen(name: str, current: object) -> object:
+        given = getattr(options, name, None)
+        return current if given is None else given
+
+    return FieldDraft(
+        key=getattr(options, "rename", None) or options.key,
+        title=chosen("title", starting.title),
+        prompt=chosen("prompt", starting.prompt),
+        input=chosen("input", starting.input),
+        choices=(
+            starting.choices
+            if options.choices is None
+            else read_pairs(options.choices, label_optional=True)
+        ),
+        item_url=chosen("item_url", starting.item_url),
+        ignore_when=(
+            starting.ignore_when
+            if options.ignore_when is None
+            else read_pairs(options.ignore_when, label_optional=False)
+        ),
+        required=chosen("required", starting.required),
+        human_only=chosen("human_only", starting.human_only),
+        follow_convention=chosen("follow_convention", starting.follow_convention),
+        original_key=None if base is None else options.key,
+    )
+
+
+def _with_field(document: Mapping[str, Any], draft: FieldDraft) -> dict[str, Any]:
+    """把一個欄位放回宣告裡，順序與必填一起維護。"""
+    properties = dict(document["properties"])
+    if draft.original_key and draft.original_key != draft.key:
+        properties = {
+            (draft.key if key == draft.original_key else key): value
+            for key, value in properties.items()
+        }
+    properties[draft.key] = draft.as_declaration()
+
+    required = [
+        key
+        for key in document.get("required", [])
+        if key not in (draft.key, draft.original_key)
+    ]
+    if draft.required:
+        required.append(draft.key)
+
+    return {**document, "properties": properties, "required": required}
+
+
+def _run_schema_add(controller: NoteController, options: argparse.Namespace) -> int:
+    document = schema.load_schema()
+    if options.key in document["properties"]:
+        raise render.InputError(f"已經有一個欄位叫「{options.key}」了。")
+
+    plan = FieldPlan(document=_with_field(document, _drafted(options, None)))
+    fields.apply_plan(plan, controller)
+    print(f"已加上欄位 {options.key}。", file=sys.stderr)
+    return 0
+
+
+def _run_schema_edit(controller: NoteController, options: argparse.Namespace) -> int:
+    document = schema.load_schema()
+    if options.key not in document["properties"]:
+        raise render.InputError(f"沒有欄位叫「{options.key}」。")
+    if options.rename and options.rename in document["properties"]:
+        raise render.InputError(f"已經有一個欄位叫「{options.rename}」了。")
+
+    base = draft_of(
+        options.key, document["properties"][options.key], options.key in document.get("required", [])
+    )
+    draft = _drafted(options, base)
+    renames = ((options.key, draft.key),) if draft.key != options.key else ()
+
+    rewritten = fields.apply_plan(
+        FieldPlan(document=_with_field(document, draft), renames=renames), controller
+    )
+    if renames:
+        print(f"{options.key} 已改名為 {draft.key}，改寫了 {len(rewritten)} 筆備註。", file=sys.stderr)
+    else:
+        print(f"已更新欄位 {options.key}。", file=sys.stderr)
+    return 0
+
+
+def _run_schema_remove(controller: NoteController, options: argparse.Namespace) -> int:
+    """刪欄位會把既有備註裡的那一欄一起拿掉，所以預設只說會影響什麼。"""
+    document = schema.load_schema()
+    if options.key not in document["properties"]:
+        raise render.InputError(f"沒有欄位叫「{options.key}」。")
+    if len(document["properties"]) == 1:
+        raise render.InputError("一個欄位都沒有的宣告收不下。")
+
+    carrying = controller.notes_carrying(options.key)
+    if not options.apply:
+        print(f"刪掉 {options.key} 會一併從 {len(carrying)} 筆備註裡拿掉它。")
+        print("確定就加上 --apply --yes。", file=sys.stderr)
+        return 0
+    if not options.yes:
+        raise render.InputError(
+            f"--apply 會改寫 {len(carrying)} 筆備註，備份過了就再加上 --yes。"
+        )
+
+    properties = {
+        key: value for key, value in document["properties"].items() if key != options.key
+    }
+    required = [key for key in document.get("required", []) if key != options.key]
+    plan = FieldPlan(
+        document={**document, "properties": properties, "required": required},
+        drops=(options.key,),
+    )
+    rewritten = fields.apply_plan(plan, controller)
+    print(f"已刪除欄位 {options.key}，改寫了 {len(rewritten)} 筆備註。", file=sys.stderr)
     return 0
 
 
@@ -490,6 +742,9 @@ _HANDLERS = {
     "schema.show": _run_schema,
     "schema.init": _run_init,
     "schema.order": _run_order,
+    "schema.add": _run_schema_add,
+    "schema.edit": _run_schema_edit,
+    "schema.remove": _run_schema_remove,
 }
 
 

@@ -1,16 +1,14 @@
-"""改欄位宣告。
+"""改欄位宣告的畫面。
 
 宣告檔是這個工具唯一的設定，以前只能手改 JSON——還得先知道 x-input、x-prompt、
 x-ignore-when 是什麼。對只設定一次的專案來說那是一次性的成本，對其他人則是入口。
 
-刪欄位與改欄位名不只是改宣告：宣告的 additionalProperties 是 false，既有備註裡
-那個欄位不跟著改，下一次讀取就整批驗證失敗。所以這個畫面產出的不是一份新宣告，
-而是一份計畫——新宣告加上「既有備註要跟著做什麼」，由呼叫端一起執行。
+草稿與計畫的定義在 core.fields：命令列走的是同一份，所以畫面上做得到的事與
+`gne schema add/edit/remove` 做得到的事一樣多。
 """
 
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from textual.app import ComposeResult
@@ -20,10 +18,16 @@ from textual.widgets import Input, Label, OptionList, Switch
 from textual.widgets.option_list import Option
 
 from ...core import schema
+from ...core.fields import (
+    INPUT_KINDS,
+    FieldDraft,
+    FieldPlan,
+    draft_of,
+    read_pairs,
+    spell_pairs,
+)
 from .confirm import ConfirmScreen
 from .dialog import BOX_CLASS, CLOSE_HINT, Dialog
-
-INPUT_KINDS = ("text", "multiline", "integer-list", "choice")
 
 KEY_COLUMN = 18
 TITLE_COLUMN = 12
@@ -38,120 +42,12 @@ def padded(text: str, width: int) -> str:
     """補到 width 格寬。用 f-string 的 :<n 會拿字數當格數，中文標題就對不齊。"""
     return text + " " * max(0, width - display_width(text))
 
+
 LIST_ID = "fields-list"
 ERROR_ID = "fields-error"
 
 HINT = f"a 新增 ｜ e 修改 ｜ d 刪除 ｜ ctrl+s 儲存；{CLOSE_HINT}"
 FORM_HINT = f"ctrl+s 收下這一欄；{CLOSE_HINT}"
-
-
-@dataclass(frozen=True)
-class FieldPlan:
-    """改完的宣告，以及既有備註要跟著做的事。"""
-
-    document: dict[str, Any]
-    renames: tuple[tuple[str, str], ...] = ()
-    drops: tuple[str, ...] = ()
-
-    @property
-    def touches_existing_notes(self) -> bool:
-        return bool(self.renames or self.drops)
-
-
-@dataclass
-class FieldDraft:
-    """表單收到的一個欄位。
-
-    可選值與「什麼時候不問」都是成對的東西（值對標籤、欄位對值），表單裡各佔一格，
-    寫成 `feat=功能, fix=錯誤`——一個 choice 欄位有幾個可選值不固定，做成幾格輸入
-    就得在打字中途重畫表單。
-    """
-
-    key: str
-    title: str
-    prompt: str
-    input: str
-    choices: tuple[tuple[str, str], ...] = ()
-    """(可選值, 顯示名稱)。"""
-    item_url: str = ""
-    ignore_when: tuple[tuple[str, str], ...] = ()
-    """(別的欄位, 那個欄位的值)。成立時這一欄就不問。"""
-    required: bool = False
-    human_only: bool = False
-    follow_convention: bool = False
-    original_key: str | None = None
-
-    def as_declaration(self) -> dict[str, Any]:
-        declaration: dict[str, Any] = {
-            "title": self.title or self.key,
-            "x-prompt": self.prompt,
-            "x-input": self.input,
-        }
-        if self.input == "integer-list":
-            declaration["type"] = "array"
-            declaration["items"] = {"type": "integer"}
-        else:
-            declaration["type"] = "string"
-        if self.choices:
-            declaration["enum"] = [value for value, _ in self.choices]
-            declaration["x-choice-labels"] = {value: label for value, label in self.choices}
-        if self.item_url:
-            declaration["x-item-url"] = self.item_url
-        if self.ignore_when:
-            declaration["x-ignore-when"] = dict(self.ignore_when)
-        if self.human_only:
-            declaration["x-human-only"] = True
-        if self.follow_convention:
-            declaration["x-follow-convention"] = True
-        return declaration
-
-
-def draft_of(key: str, declaration: Mapping[str, Any], required: bool) -> FieldDraft:
-    labels = declaration.get("x-choice-labels", {})
-    return FieldDraft(
-        key=key,
-        title=declaration.get("title", key),
-        prompt=declaration.get("x-prompt", ""),
-        input=declaration.get("x-input", "text"),
-        choices=tuple(
-            (value, labels.get(value, value)) for value in declaration.get("enum", ())
-        ),
-        item_url=declaration.get("x-item-url", ""),
-        ignore_when=tuple(
-            (name, str(value)) for name, value in declaration.get("x-ignore-when", {}).items()
-        ),
-        required=required,
-        human_only=bool(declaration.get("x-human-only", False)),
-        follow_convention=bool(declaration.get("x-follow-convention", False)),
-        original_key=key,
-    )
-
-
-def spell_pairs(pairs: Iterable[tuple[str, str]]) -> str:
-    return ", ".join(f"{left}={right}" for left, right in pairs)
-
-
-def read_pairs(raw: str, *, label_optional: bool) -> tuple[tuple[str, str], ...]:
-    """`a=1, b=2` 讀成成對的東西。
-
-    label_optional 是給可選值用的：只寫 `feat` 就以值本身當顯示名稱，因為英文專案
-    的標籤本來就等於值，不該逼人多打一次。
-    """
-    collected: list[tuple[str, str]] = []
-    for piece in raw.split(","):
-        piece = piece.strip()
-        if not piece:
-            continue
-        left, separator, right = piece.partition("=")
-        left, right = left.strip(), right.strip()
-        if not left:
-            raise ValueError(f"「{piece}」左邊是空的。")
-        if not separator or not right:
-            if not label_optional:
-                raise ValueError(f"「{piece}」要寫成 欄位=值。")
-            right = left
-        collected.append((left, right))
-    return tuple(collected)
 
 
 class FieldFormScreen(Dialog[FieldDraft | None]):

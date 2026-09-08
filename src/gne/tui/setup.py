@@ -8,7 +8,8 @@
 from textual.app import App
 
 from ..core import schema
-from .screens import FieldPlan, FieldsScreen
+from ..core.fields import FieldPlan
+from .screens import FieldsScreen
 
 
 class FieldSetupApp(App[FieldPlan | None]):

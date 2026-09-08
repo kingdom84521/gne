@@ -14,7 +14,8 @@ from gne.core.entity import NoteController
 from gne.tui.app import GneApp
 from gne.tui.screens import DefaultNoteScreen, FieldsScreen, RangeScreen
 from gne.tui.screens.confirm import ConfirmScreen
-from gne.tui.screens.fields import FieldFormScreen, draft_of
+from gne.core.fields import draft_of
+from gne.tui.screens.fields import FieldFormScreen
 from gne.tui.setup import FieldSetupApp
 
 from conftest import run_git

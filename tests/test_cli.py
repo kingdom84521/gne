@@ -1,11 +1,18 @@
+import dataclasses
 import json
 
 import pytest
 
 from conftest import run_git
 from gne import cli
-from gne.core import git, schema
-from gne.tui.screens.fields import FieldPlan
+from gne.core import git, revisions, schema
+from gne.core.entity import NoteController
+from gne.core.fields import FieldDraft, FieldPlan
+
+
+@pytest.fixture
+def controller():
+    return NoteController({"schematic": "yaml", "fetch": False, "push": False})
 
 
 @pytest.fixture
@@ -668,10 +675,17 @@ def test_a_range_given_once_is_reused(git_repo, commit, no_remote, capsys):
     assert capsys.readouterr().out == first
 
 
-def test_without_a_range_and_without_a_memory_it_says_so(git_repo, commit, no_remote, capsys):
+def test_without_a_range_and_without_a_memory_it_says_so(
+    git_repo, commit, no_remote, monkeypatch, capsys
+):
+    """三種來源都沒說話、也沒有上一次可以沿用——那就把三種說法都列出來。"""
+    monkeypatch.delenv(revisions.FROM_ENV, raising=False)
+    monkeypatch.delenv(revisions.TO_ENV, raising=False)
     commit()
     run("list", expect=1)
-    assert "沒有指定區間" in capsys.readouterr().err
+    complaint = capsys.readouterr().err
+    assert "說不出要看哪一段" in complaint
+    assert revisions.FROM_ENV in complaint
 
 
 # --- order：欄位的顯示順序 ---
@@ -732,7 +746,7 @@ def test_everything_a_person_does_in_the_editor_has_a_command():
 def test_the_schema_commands_cover_declaring_and_ordering():
     listing = cli.build_parser()._subparsers._group_actions[0]
     declaration = listing.choices["schema"]._subparsers._group_actions[0].choices
-    assert set(declaration) == {"show", "init", "order"}
+    assert set(declaration) == {"show", "init", "order", "add", "edit", "remove"}
 
 
 # --- 唯讀 ---
@@ -749,3 +763,266 @@ def test_read_only_does_not_push(git_repo, commit, no_remote, spy_editor):
     commit()
     cli.main(["--read-only"])
     assert spy_editor["push"] is False
+
+
+# --- schema 的文字模式：畫面上改得動的，命令列也要改得動 ---
+
+
+def flags_of(*path: str) -> set[str]:
+    parser = cli.build_parser()
+    for name in path:
+        parser = parser._subparsers._group_actions[0].choices[name]
+    return {option for action in parser._actions for option in action.option_strings}
+
+
+def test_the_command_line_says_everything_a_field_declaration_can():
+    """表單與命令列收的是同一份草稿，能表達的事就該一樣多。
+
+    草稿多一個旋鈕而命令列沒跟上，這一條會紅——不然就會出現「只有畫面上做得到」的東西。
+    """
+    covered = {flag.lstrip("-").replace("-", "_") for flag in flags_of("schema", "add")}
+    knobs = {item.name for item in dataclasses.fields(FieldDraft)} - {"key", "original_key"}
+    assert knobs <= covered
+
+
+@pytest.fixture
+def declaration(git_repo, monkeypatch, tmp_path):
+    """這個 repo 的宣告檔，改動看得到。"""
+    path = tmp_path / "note-schema.json"
+    path.write_text(schema.EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv(schema.SCHEMA_ENV, str(path))
+    schema.forget_schema()
+    yield path
+    schema.forget_schema()
+
+
+def written(path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))["properties"]
+
+
+def test_schema_add_writes_the_whole_field(git_repo, commit, no_remote, declaration):
+    commit()
+    run(
+        "schema", "add", "impact",
+        "--title", "影響", "--prompt", "影響有多大。",
+        "--input", "choice", "--choices", "big=很大,small=不大",
+        "--ignore-when", "type=skip", "--required",
+    )
+    field = written(declaration)["impact"]
+    assert field["enum"] == ["big", "small"]
+    assert field["x-choice-labels"] == {"big": "很大", "small": "不大"}
+    assert field["x-ignore-when"] == {"type": "skip"}
+    assert "impact" in json.loads(declaration.read_text(encoding="utf-8"))["required"]
+
+
+def test_schema_add_refuses_a_key_that_is_taken(git_repo, commit, no_remote, declaration, capsys):
+    commit()
+    assert cli.main(["schema", "add", "type", "--prompt", "x"]) != 0
+    assert "已經有一個欄位叫" in capsys.readouterr().err
+
+
+def test_schema_edit_leaves_alone_what_was_not_given(git_repo, commit, no_remote, declaration):
+    """沒給的旗標保持原樣：改個標題不該把可選值洗掉。"""
+    commit()
+    run("schema", "edit", "type", "--title", "分類")
+    field = written(declaration)["type"]
+    assert field["title"] == "分類"
+    assert field["enum"] == ["feat", "fix", "security", "skip"]
+    assert field["x-choice-labels"]["feat"] == "功能"
+
+
+def test_schema_edit_renames_the_field_and_the_notes_with_it(
+    controller, git_repo, commit, no_remote, declaration
+):
+    head = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, head)
+
+    run("schema", "edit", "change_log", "--rename", "summary")
+
+    assert "summary" in written(declaration)
+    assert "change_log" not in written(declaration)
+    assert controller.all_notes()[head] == {"type": "fix", "summary": "修好了"}
+
+
+def test_schema_remove_says_what_it_would_touch_and_does_nothing(
+    controller, git_repo, commit, no_remote, declaration, capsys
+):
+    head = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, head)
+
+    run("schema", "remove", "change_log")
+
+    assert "1 筆" in capsys.readouterr().out
+    assert "change_log" in written(declaration), "沒加 --apply 就什麼都沒動"
+
+
+def test_schema_remove_needs_the_backup_confirmation(
+    controller, git_repo, commit, no_remote, declaration
+):
+    head = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, head)
+
+    assert cli.main(["schema", "remove", "change_log", "--apply"]) != 0
+    assert "change_log" in written(declaration)
+
+
+def test_schema_remove_takes_the_field_out_of_the_notes_too(
+    controller, git_repo, commit, no_remote, declaration
+):
+    head = commit()
+    controller.add({"type": "fix", "change_log": "修好了"}, head)
+
+    run("schema", "remove", "change_log", "--apply", "--yes")
+
+    assert "change_log" not in written(declaration)
+    assert controller.all_notes()[head] == {"type": "fix"}
+
+
+def test_schema_remove_will_not_empty_the_declaration(git_repo, commit, no_remote, tmp_path, monkeypatch):
+    commit()
+    lone = tmp_path / "note-schema.json"
+    lone.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"note": {"title": "備註", "type": "string", "x-prompt": "寫。"}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(schema.SCHEMA_ENV, str(lone))
+    schema.forget_schema()
+    assert cli.main(["schema", "remove", "note", "--apply", "--yes"]) != 0
+    schema.forget_schema()
+
+
+# --- 區間的來源：命令列 > 檔案 > 環境 ---
+
+
+@pytest.fixture
+def no_range_sources(monkeypatch):
+    monkeypatch.delenv(revisions.FROM_ENV, raising=False)
+    monkeypatch.delenv(revisions.TO_ENV, raising=False)
+
+
+def test_the_environment_alone_makes_a_bare_run_work(
+    git_repo, commit, no_remote, no_range_sources, monkeypatch, capsys
+):
+    """原本那個機制假設檔案在；現在設個環境變數就夠了。"""
+    base = commit("feat: base")
+    commit("feat: 後來")
+    monkeypatch.setenv(revisions.FROM_ENV, base)
+
+    run("list")
+
+    assert "1 筆" in capsys.readouterr().err
+
+
+def test_a_file_can_say_where_the_range_starts(
+    git_repo, commit, no_remote, no_range_sources, tmp_path, capsys
+):
+    base = commit("feat: base")
+    commit("feat: 後來")
+    marker = tmp_path / "VERSION"
+    marker.write_text(f"{base}\n")
+
+    run("list", "--from-file", str(marker))
+
+    assert "1 筆" in capsys.readouterr().err
+
+
+def test_only_a_start_means_up_to_head(
+    git_repo, commit, no_remote, no_range_sources, monkeypatch, capsys
+):
+    base = commit("feat: base")
+    commit("feat: 一")
+    commit("feat: 二")
+    monkeypatch.setenv(revisions.FROM_ENV, base)
+
+    run("list")
+
+    assert "2 筆" in capsys.readouterr().err
+
+
+def test_being_shadowed_stops_and_asks(
+    git_repo, commit, no_remote, no_range_sources, monkeypatch, capsys
+):
+    """設了環境變數又在命令列給了別的：值本身沒錯，但有人以為自己的設定生效了。"""
+    base = commit("feat: base")
+    commit("feat: 後來")
+    monkeypatch.setenv(revisions.FROM_ENV, "v0.0.0")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    assert cli.main(["list", f"{base}...master"]) != 0
+    complaint = capsys.readouterr().err
+    assert revisions.FROM_ENV in complaint
+    assert "--yes" in complaint
+
+
+def test_yes_carries_on_past_the_shadowing(
+    git_repo, commit, no_remote, no_range_sources, monkeypatch, capsys
+):
+    base = commit("feat: base")
+    commit("feat: 後來")
+    monkeypatch.setenv(revisions.FROM_ENV, "v0.0.0")
+
+    run("list", f"{base}...master", "--yes")
+
+    complaint = capsys.readouterr().err
+    assert revisions.FROM_ENV in complaint, "照做也要先講"
+
+
+def test_answering_no_stops(git_repo, commit, no_remote, no_range_sources, monkeypatch):
+    base = commit("feat: base")
+    commit("feat: 後來")
+    monkeypatch.setenv(revisions.FROM_ENV, "v0.0.0")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    assert cli.main(["list", f"{base}...master"]) != 0
+
+
+def test_answering_yes_carries_on(
+    git_repo, commit, no_remote, no_range_sources, monkeypatch, capsys
+):
+    base = commit("feat: base")
+    commit("feat: 後來")
+    monkeypatch.setenv(revisions.FROM_ENV, "v0.0.0")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    run("list", f"{base}...master")
+
+    assert "1 筆" in capsys.readouterr().err
+
+
+def test_the_remembered_range_never_asks(
+    git_repo, commit, no_remote, no_range_sources, capsys
+):
+    """上一次用過的那一個是這台機器的記憶，不是誰的設定，被蓋掉不該叫住人。"""
+    base = commit("feat: base")
+    commit("feat: 後來")
+    run("list", f"{base}...master")
+    capsys.readouterr()
+
+    run("list")
+
+    assert "1 筆" in capsys.readouterr().err
+
+
+def test_a_range_reaches_the_editor_through_the_positional(
+    git_repo, commit, no_remote, no_range_sources, spy_editor
+):
+    """`gne v1...HEAD` 是文件上的主要用法——它不能被當成一個 hash 擋下來。"""
+    base = commit("feat: base")
+    commit("feat: 後來")
+    cli.main([f"{base}...master"])
+    assert spy_editor["revision_range"] == f"{base}...master"
+
+
+def test_a_single_hash_still_means_just_that_one(git_repo, commit, no_remote, spy_editor):
+    head = commit()
+    cli.main([head])
+    assert spy_editor["only"] == head

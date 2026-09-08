@@ -20,12 +20,12 @@ from ..core import defaults, git, provenance, schema
 from ..core.entity import NoteController, NoteError, NoteSyncError
 from ..core.types import NoteDocument
 from . import keys, session
+from ..core.fields import FieldPlan, apply_plan
 from .screens import (
     CommitDetailScreen,
     CommitInfoScreen,
     ConfirmScreen,
     DefaultNoteScreen,
-    FieldPlan,
     FieldsScreen,
     RangeScreen,
     ShortcutsScreen,
@@ -400,17 +400,9 @@ class GneApp(App[None]):
 
     @work(thread=True, exclusive=True, group="fields")
     def _apply_field_plan(self, plan: FieldPlan) -> None:
-        """先改備註再寫宣告。
-
-        反過來的話，中間那一刻宣告已經換了、備註還是舊的，這時候任何一次讀取都會
-        整批驗證失敗——那正是這條路要避免的事。
-        """
+        """落地由 core.fields 做，這裡只負責不要把畫面凍住。"""
         try:
-            for old_key, new_key in plan.renames:
-                self._controller.rename_field(old_key, new_key)
-            for key in plan.drops:
-                self._controller.drop_field(key)
-            schema.save_schema(plan.document)
+            apply_plan(plan, self._controller)
         except (NoteError, NoteSyncError, git.GitError, schema.SchemaDeclarationError) as error:
             self.call_from_thread(self.notify, str(error), severity="error")
             return

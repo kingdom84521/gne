@@ -118,7 +118,6 @@ gne list --format json  # 不進畫面，把資料倒出來
 | `--author <email>` | 只列出這個人的 commit，預設是自己 |
 | `--all-authors` | 列出所有人的 commit |
 | `--include-noted` | 連已經有備註的 commit 也列出來 |
-| `--range <range>` | 指定 commit 區間 |
 | `--ai-generated` | 在上面的篩選之上再收一次：只看 AI 產生、還沒人工確認的那些 |
 
 ## 子命令
@@ -139,17 +138,43 @@ gne list --format json  # 不進畫面，把資料倒出來
 | `gne schema show [--format text\|json]` | 印出欄位宣告 |
 | `gne schema init` | 問出這個專案的欄位，寫成 `.gne/note-schema.json` |
 | `gne schema order [<key>…]` | 印出或重排欄位的顯示順序 |
+| `gne schema add <key> --prompt … [旗標]` | 加一個欄位 |
+| `gne schema edit <key> [--rename <new>] [旗標]` | 改一個欄位，沒給的旗標保持原樣 |
+| `gne schema remove <key> [--apply --yes]` | 刪一個欄位，預設只說會影響幾筆備註 |
 
 編輯器沒有自己的子命令名字——`gne <區間>` 就是它，因為那是這個工具平常在做的事。
 其餘四個各管一件事：`list` 用文字看、`export` 輸出文件、`note` 逐條改備註、`schema` 改欄位宣告。
 
-**`gne note` 底下是編輯器的另一條路**：人在畫面上做得到的每一件事，這裡都有一條指令做得到，
-不進畫面、可接管線。給腳本與 AI 走的就是這一條。
+**`gne note` 與 `gne schema` 是畫面的另一條路**：人在畫面上做得到的每一件事，這裡都有一條
+指令做得到，不進畫面、可接管線。給腳本與 AI 走的就是這一條。`gne schema add/edit` 的旗標
+與 `Ctrl+F` 的表單收的是同一份東西（見[增修欄位](#增修欄位)），少收一個關鍵字會有測試紅掉。
 
 全域 `--no-push` 讓異動不推送到 remote，批次填寫時建議加上，收尾再 `gne note push` 推一次。
 
-`<range>` 給過一次就會被記住，之後省略它就是沿用上一次那一個；編輯器裡按 `Ctrl+R` 隨時換。
-第一次進來沒有可以沿用的區間時，編輯器會問，不是把你踢回命令列。記在 `.git/gne/range`——
+### 區間從哪裡來
+
+同一端可以由三種來源說出來，優先序由高到低：
+
+| | 怎麼給 | 適合 |
+| --- | --- | --- |
+| 1 | `gne v1.2.0...HEAD` | 這一次就想看這一段 |
+| 2 | `--from-file VERSION` / `--to-file …` | release 流程本來就把版本寫在檔案裡 |
+| 3 | `GNE_FROM` / `GNE_TO` | 設一次，之後 `gne` 不帶任何東西也會動 |
+
+只講得出起點時終點就是 `HEAD`。三種都沒說話才落到「上一次用過的那一個」——它記在
+`.git/gne/range`，是這個 clone 的記憶而不是誰的設定，所以它被蓋掉時不會叫住你。
+編輯器裡按 `Ctrl+R` 隨時換；連上一次都沒有時，編輯器會問，不是把你踢回命令列。
+
+**低位階的來源被高位階蓋掉時會先問過你**：
+
+```
+$ GNE_FROM=68e56e0 gne list --from-file VERSION
+起點用的是 v1.0.0（來自檔案 VERSION）
+　被蓋掉的 環境變數 GNE_FROM：68e56e0
+要照上面選的值繼續嗎？[y/N]
+```
+
+值本身沒錯，錯的是有人以為自己的設定生效了。非互動時不會替你決定——確認過就加 `--yes`。記在 `.git/gne/range`——
 它是這個 clone 的暫存狀態，不是專案的宣告，所以不進版控，也不需要誰去忽略它。
 沒給、又沒有上一次可以沿用時 gne 會說出來，而不是猜一個你的 repo 裡沒有的 ref。
 
@@ -180,6 +205,18 @@ gne list --format json  # 不進畫面，把資料倒出來
 - `x-human-only`：這個欄位只能由人填。AI 寫入時碰到它會被擋下來，不是靠 `x-prompt` 拜託。
 - `x-ignore-when`：別的欄位變成什麼值時，這一欄就不必問了。
 - `x-follow-convention`：commit 前綴對得上可選值時就用它（只有 `choice` 欄位用得上）。
+
+不進畫面也做得到同樣的事，旗標與表單一一對應：
+
+```sh
+gne schema add impact --title 影響 --prompt "影響有多大。" \
+  --input choice --choices "big=很大,small=不大" --ignore-when "type=skip"
+
+gne schema edit impact --title 衝擊          # 沒給的旗標保持原樣
+gne schema edit change_log --rename summary  # 備註跟著改名
+gne schema remove change_log                 # 先說會影響幾筆
+gne schema remove change_log --apply --yes   # 真的刪
+```
 
 順序就是 `properties` 的順序，要重排用 `gne schema order`——列出現有的每一個欄位，剛好一次：
 
