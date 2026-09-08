@@ -19,12 +19,28 @@
     padding: 0 1;
 }
 
-#commit-subject {
+#commit-head {
     height: auto;
-    color: $text-accent;
-    text-style: bold;
     padding-bottom: 1;
     border-bottom: solid $panel;
+}
+
+/* 標題只佔一行：它一撐開，底下的預覽與問答就整塊往下擠。放不下的字尾換成 …，
+   右下角那一行（#commit-more）會說 ctrl+o 看得到全部。 */
+#commit-subject {
+    height: 1;
+    color: $text-accent;
+    text-style: bold;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* 沒被截斷時由 CommitHead 收起來——那時沒有東西被藏著，提示就是假話。 */
+#commit-more {
+    height: 1;
+    text-align: right;
+    color: $text-muted;
+    display: none;
 }
 
 #preview {

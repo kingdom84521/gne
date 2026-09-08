@@ -20,8 +20,9 @@ from gne.tui.screens import (
     ShortcutsScreen,
     SuggestionScreen,
 )
-from gne.tui.widgets import CommitList, NotePreview, NotePrompt
+from gne.tui.widgets import CommitHead, CommitList, NotePreview, NotePrompt
 from gne.tui.widgets import commit_list
+from gne.tui.widgets.commit_head import MORE_HINT, SUBJECT_ID
 from gne.tui.widgets.note_prompt import INPUT_ID, LOG_ID, QUESTION_ID
 
 from gne.core import schema
@@ -372,6 +373,148 @@ async def test_cancelling_without_a_change_leaves_straight_away(controller, git_
         assert app.query_one(NotePrompt).display is False
 
 
+# --- 填完一筆，列表不該移動 ---
+
+
+async def test_saving_a_note_does_not_move_the_list(controller, git_repo, commit):
+    """使用者沒有移動，畫面就不該移動。
+
+    從列表下半部往上填時最明顯：記號從 [ ] 變成 [*] 要是整份重畫，那一列就被重新捲到
+    視窗邊緣，眼睛得重新找一次自己填到哪裡。
+    """
+    write_default_note(git_repo, "type: skip\n")
+    base = commit("feat: base")
+    for index in range(40):
+        commit(f"fix: 第 {index} 筆")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        listing = app.query_one(CommitList)
+        # 先捲到底，再把游標往回移進畫面中央——重畫時「把游標捲進畫面」會把它推到
+        # 視窗邊緣，游標剛好貼著邊緣的話就問不出來了。
+        listing.highlighted = listing.option_count - 1
+        await pilot.pause()
+        listing.highlighted = listing.option_count - 8
+        await pilot.pause()
+        offset = listing.scroll_offset.y
+        highlighted = listing.highlighted
+        assert offset > 0, "列表要長到會捲動，這個測試才問得出東西"
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert app.state.pending_count == 1
+        assert listing.scroll_offset.y == offset
+        assert listing.highlighted == highlighted
+        assert "[*]" in str(listing.get_option_at_index(highlighted).prompt)
+
+
+async def test_a_reloaded_list_keeps_the_cursor_on_the_same_commit(controller, git_repo, commit):
+    """重新掃描是換了一批人，位置只能盡量接回去——游標認的是 hash 而不是第幾列。
+
+    掃描期間有人往 master 上再推一筆，列表就整批往下移一列。認第幾列的話游標會落到
+    隔壁那一筆 commit 上，而使用者以為自己還站在原地。
+    """
+    base = commit("feat: base")
+    for index in range(6):
+        commit(f"fix: 第 {index} 筆")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        listing = app.query_one(CommitList)
+        listing.highlighted = 3
+        await pilot.pause()
+        standing = app.selected_hash
+
+        commit("fix: 掃描期間又來一筆")
+        await pilot.press("r")
+        await settle(app, pilot)
+
+        assert listing.option_count == 7, "新的那一筆要真的進到列表裡，位置才會整批位移"
+        assert app.selected_hash == standing
+
+
+# --- esc 退一層 ---
+
+
+async def test_escape_on_an_empty_box_cancels_the_edit(controller, git_repo, commit):
+    """沒字可清就退出這一筆——同一顆鍵按下去永遠有反應。"""
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await answer(app, pilot)
+        answer_box(app).value = ""
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one(NotePrompt).display is False
+        assert app.is_running is True
+
+
+async def test_escape_on_a_choice_question_cancels_the_edit(controller, git_repo, commit):
+    """選項題沒有輸入框，所以第一顆 esc 就是退出這一筆。"""
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.query_one(NotePrompt).display is True
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one(NotePrompt).display is False
+        assert app.is_running is True
+
+
+async def test_escape_while_editing_a_changed_note_asks_first(controller, git_repo, commit):
+    """退出這一筆跟 ctrl+w 是同一件事，改過了一樣先問。"""
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await answer(app, pilot)
+        await answer(app, pilot, "改了")
+        answer_box(app).value = ""
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+
+
+async def test_escape_in_browsing_leaves(controller, git_repo, commit):
+    """一顆鍵一路退出去：退到列表上沒有東西可退，就是離開這個工具。"""
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.is_running is False
+
+
+async def test_escape_in_browsing_asks_when_something_is_pending(controller, git_repo, commit):
+    """手滑按到也丟不掉東西：有待寫入的備註時先問。"""
+    write_default_note(git_repo, "type: skip\n")
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("a")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        assert app.is_running is True
+
+
 # --- 連按兩次 Esc 清空輸入 ---
 
 
@@ -706,11 +849,46 @@ async def test_q_with_pending_edits_asks_first(controller, git_repo, commit):
 
 async def test_one_ctrl_c_warns_instead_of_leaving(controller, git_repo, commit):
     """離開會丟掉待寫入的東西，但為它開一個對話框太重——先掛一條提示，第二次才走。"""
+    write_default_note(git_repo, "type: skip\n")
     base = commit("feat: base")
     commit("fix: 東西")
     app = editor(controller, f"{base}...master")
     async with app.run_test(size=SIZE) as pilot:
         await settle(app, pilot)
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.state.pending_count == 1
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.is_running is True
+        assert "再按一次 Ctrl+C 不儲存直接離開" in screen_text(app)
+
+
+async def test_one_ctrl_c_leaves_when_nothing_would_be_lost(controller, git_repo, commit):
+    """什麼都沒改過，第二次按只是多此一舉——那一刻不該拿不存在的風險擋路。"""
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        assert app.state.pending_count == 0
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+    assert app.is_running is False
+
+
+async def test_typing_in_the_open_question_still_takes_two_ctrl_c(controller, git_repo, commit):
+    """還沒按 Enter、只停在輸入框裡的那幾個字也是會不見的東西。"""
+    base = commit("feat: base")
+    commit("fix: 東西")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await answer(app, pilot)
+        answer_box(app).value = "打了字"
+        assert app.state.pending_count == 0
         await pilot.press("ctrl+c")
         await pilot.pause()
         assert app.is_running is True
@@ -739,11 +917,14 @@ async def test_the_second_ctrl_c_has_to_come_within_the_window(
 ):
     """隔了很久才按的那一次不是「再按一次」，它是新的第一次。"""
     monkeypatch.setattr(tui_app, "DOUBLE_PRESS_SECONDS", 0.05)
+    write_default_note(git_repo, "type: skip\n")
     base = commit("feat: base")
     commit("fix: 東西")
     app = editor(controller, f"{base}...master")
     async with app.run_test(size=SIZE) as pilot:
         await settle(app, pilot)
+        await pilot.press("a")
+        await pilot.pause()
         await pilot.press("ctrl+c")
         await pilot.pause()
         await pilot.pause(0.2)
@@ -757,11 +938,14 @@ async def test_the_warning_covers_the_shortcut_row_instead_of_pushing_it(
     controller, git_repo, commit
 ):
     """提示蓋在快捷鍵列上，不另外佔一行——版面不會因為按了一次 ctrl+c 而跳。"""
+    write_default_note(git_repo, "type: skip\n")
     base = commit("feat: base")
     commit("fix: 東西")
     app = editor(controller, f"{base}...master")
     async with app.run_test(size=SIZE) as pilot:
         await settle(app, pilot)
+        await pilot.press("a")
+        await pilot.pause()
         before = app.query_one(CommitList).region.height
         await pilot.press("ctrl+c")
         await pilot.pause()
@@ -1084,13 +1268,45 @@ async def test_the_heading_carries_nothing_but_the_subject(controller, git_repo,
         assert commit_date_year() not in shown
 
 
-async def test_a_long_subject_gets_the_whole_strip(controller, git_repo, commit):
+async def test_a_long_subject_stays_on_one_line_and_says_where_the_rest_is(
+    controller, git_repo, commit
+):
+    """標題撐高，底下的預覽與問答就整塊往下擠——所以它只佔一行，並說出其餘在哪裡。"""
     base = commit("feat: base")
-    tail = "結尾看得到"
+    tail = "結尾放不下"
     commit("fix: " + "很長的標題內容" * 8 + tail)
     app = editor(controller, f"{base}...master")
     async with app.run_test(size=SIZE) as pilot:
         await settle(app, pilot)
+        head = app.query_one(CommitHead)
+        assert head.clipped is True
+        assert app.query_one(f"#{SUBJECT_ID}").region.height == 1
+        assert tail not in screen_text(app)
+        assert MORE_HINT in screen_text(app)
+
+
+async def test_a_short_subject_does_not_claim_there_is_more(controller, git_repo, commit):
+    """沒有東西被藏起來時，一句「還有更多」就是假話。"""
+    base = commit("feat: base")
+    commit("fix: 短標題")
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        assert app.query_one(CommitHead).clipped is False
+        assert MORE_HINT not in screen_text(app)
+
+
+async def test_the_whole_subject_is_in_the_information_dialog(controller, git_repo, commit):
+    """截掉的字尾不是不見了，ctrl+o 那個對話框裡連同 git show 一起看得到。"""
+    base = commit("feat: base")
+    tail = "結尾放不下"
+    commit("fix: " + "很長的標題內容" * 8 + tail)
+    app = editor(controller, f"{base}...master")
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(app, pilot)
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert isinstance(app.screen, CommitInfoScreen)
         assert tail in screen_text(app)
 
 

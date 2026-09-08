@@ -94,6 +94,7 @@ class CommitList(OptionList):
     def __init__(self, **arguments) -> None:
         super().__init__(**arguments)
         self._state = EditorState()
+        self._painted: tuple[str, ...] = ()
 
     @property
     def required_width(self) -> int:
@@ -140,10 +141,42 @@ class CommitList(OptionList):
         self.post_message(self.LeaveRequested())
 
     def _repaint(self) -> None:
+        """同一批 commit 只換記號，不重建列表。
+
+        重建會把游標與捲動位置一起丟掉：從列表下半部往上填，填完那一筆的記號變成
+        `[*]` 時整份重畫，那一列就被重新捲到視窗邊緣。使用者沒有移動，畫面就不該移動。
+        """
+        painting = tuple(commit.hash for commit in self._state.commits)
+        if painting == self._painted:
+            for commit in self._state.commits:
+                self.replace_option_prompt(commit.hash, row_for(self._state, commit))
+            return
+        self._rebuild(painting)
+
+    def _rebuild(self, painting: tuple[str, ...]) -> None:
+        """換了區間或重新掃描才走這裡：列表換了一批人，位置只能盡量接回去。
+
+        游標認的是 hash 而不是第幾列——同一筆 commit 在新的一批裡未必還在原來的位置。
+        那個 hash 只能從上一次畫的那一批問，不能問 state：state 已經換成新的了。
+        """
         previous = self.highlighted
+        standing = (
+            self._painted[previous]
+            if previous is not None and previous < len(self._painted)
+            else None
+        )
+        offset = self.scroll_offset.y
+
         self.clear_options()
         self.add_options(
             [Option(row_for(self._state, commit), id=commit.hash) for commit in self._state.commits]
         )
-        if self._state.commits:
-            self.highlighted = min(previous or 0, len(self._state.commits) - 1)
+        self._painted = painting
+        if not painting:
+            return
+
+        if standing in painting:
+            self.highlighted = painting.index(standing)
+        else:
+            self.highlighted = min(previous or 0, len(painting) - 1)
+        self.scroll_to(y=offset, animate=False)

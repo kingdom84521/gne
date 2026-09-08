@@ -32,7 +32,7 @@ from .screens import (
     SuggestionScreen,
 )
 from .state import EditorState
-from .widgets import CommitList, NotePreview, NotePrompt
+from .widgets import CommitHead, CommitList, NotePreview, NotePrompt
 from .widgets.commit_list import note_state
 
 NOTHING_SELECTED = "（沒有可編輯的 commit）"
@@ -101,11 +101,16 @@ class GneApp(App[None]):
         # backspace 一起綁：多數終端機把 ctrl+h 送成 backspace 的那個位元組，分得出來的
         # 只有支援 Kitty 鍵盤協定的那些。輸入框自己會吃掉 backspace，打字因此不受影響。
         Binding("ctrl+h,backspace", "show_shortcuts", "快捷鍵", key_display="ctrl+h"),
-        # 要按的是 ctrl+shift+q：ctrl+q 在 VS Code 上是「結束 VS Code」，按下去會把編輯器
+        # esc 在瀏覽時就是離開——一顆鍵一路退出去，退到沒有東西可退就是離開這個工具。
+        # 有待寫入的備註時會先問，所以手滑按到也丟不掉東西。
+        #
+        # 另外綁 ctrl+shift+q：ctrl+q 在 VS Code 上是「結束 VS Code」，按下去會把編輯器
         # 一起關掉。多數終端機把這兩顆送成同一個位元組（分得出來的只有支援 Kitty 鍵盤協定
         # 的那些），所以兩顆都綁——分不出來的終端機收到的是 ctrl+q，那時也要離開得掉。
-        keys.hidden("ctrl+shift+q,ctrl+q", "leave", "離開", key_display="ctrl+shift+q"),
-        keys.hidden("ctrl+c", "leave_at_once", "不儲存直接離開（連按兩次）"),
+        keys.hidden(
+            "escape,ctrl+shift+q,ctrl+q", "leave", "離開", key_display="esc / ctrl+shift+q"
+        ),
+        keys.hidden("ctrl+c", "leave_at_once", "不儲存直接離開（有待寫入時連按兩次）"),
         # ctrl+shift+w 只有支援 Kitty 鍵盤協定的終端機分得出來，其餘會當成 ctrl+w
         # （＝編輯中的「取消」）。分不出來的終端機請用連按兩次 ctrl+c。
         keys.hidden("ctrl+shift+w", "leave_now", "強制關閉"),
@@ -152,7 +157,7 @@ class GneApp(App[None]):
             with Vertical(id="commit-pane"):
                 yield CommitList(id="commits")
             with Vertical(id="pane"):
-                yield Static("", id="commit-subject")
+                yield CommitHead(id="commit-head")
                 yield NotePreview(id="preview")
                 yield NotePrompt(id="prompt")
         yield Static("", id="status")
@@ -179,6 +184,10 @@ class GneApp(App[None]):
     @property
     def commit_list(self) -> CommitList:
         return self.query_one(CommitList)
+
+    @property
+    def commit_head(self) -> CommitHead:
+        return self.query_one(CommitHead)
 
     @property
     def prompt(self) -> NotePrompt:
@@ -254,15 +263,13 @@ class GneApp(App[None]):
 
     def refresh_pane(self) -> None:
         if self.loading_commits:
-            self.query_one("#commit-subject", Static).update(LOADING_TITLE)
+            self.commit_head.display_subject(LOADING_TITLE)
             self.query_one(NotePreview).display_hint(LOADING_DETAIL)
             return
 
         revision = self.selected_hash
         commit = self.state.commit_of(revision) if revision else None
-        self.query_one("#commit-subject", Static).update(
-            commit.subject if commit else NOTHING_SELECTED
-        )
+        self.commit_head.display_subject(commit.subject if commit else NOTHING_SELECTED)
         if revision is not None:
             self.query_one(NotePreview).display_note(self.state.written_note_of(revision))
 
@@ -605,7 +612,14 @@ class GneApp(App[None]):
         self.query_one(Footer).display = not showing
 
     def action_leave_at_once(self) -> None:
-        """連按兩次 ctrl+c 就走，不寫入任何東西。"""
+        """不寫入任何東西就走。
+
+        會弄丟東西時才要連按兩次。什麼都沒改過就沒有東西可丟，那一刻要求按第二次是拿
+        一個不存在的風險擋路。
+        """
+        if not self.losable:
+            self.exit()
+            return
         if self.confirmed_twice("leave_at_once", QUIT_HINT):
             self.exit()
 
@@ -613,14 +627,34 @@ class GneApp(App[None]):
         """強制關閉：不問、不寫入，一按就結束。"""
         self.exit()
 
-    def action_leave(self) -> None:
+    @property
+    def losable(self) -> bool:
+        """現在離開會不會弄丟東西。
+
+        兩種東西會不見：暫存但還沒寫入的備註，以及正在答的這一筆裡改過的部分——後者
+        包含還沒按 Enter、只停在輸入框裡的那幾個字。
+        """
         if self.state.pending_count:
-            self.push_screen(
-                ConfirmScreen(f"還有 {self.state.pending_count} 筆沒寫入，確定離開嗎?"),
-                self._finish_leave,
-            )
+            return True
+        revision = self.selected_hash
+        if not self.editing or revision is None:
+            return False
+        if self.prompt.touched:
+            return True
+        # 只比欄位：AI 記號不是使用者打的，不能拿它冒充「這一筆改過了」。
+        return self._collect() != provenance.fields_of(self.state.note_of(revision))
+
+    def action_leave(self) -> None:
+        if self.losable:
+            self.push_screen(ConfirmScreen(self._leave_question()), self._finish_leave)
             return
         self.exit()
+
+    def _leave_question(self) -> str:
+        """問句說出來會丟掉什麼：整批沒寫入的，或手上這一筆。"""
+        if self.state.pending_count:
+            return f"還有 {self.state.pending_count} 筆沒寫入，確定離開嗎?"
+        return "這一筆改過了還沒寫入，確定離開嗎?"
 
     def _finish_leave(self, confirmed: bool | None) -> None:
         if confirmed:

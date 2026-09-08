@@ -131,13 +131,17 @@ class NotePrompt(Vertical):
 
     # 都不上快捷鍵列，改列在 ctrl+h 的清單裡（見 keys.hidden）。
     #
-    # 取消綁 ctrl+w 而不是 esc：esc 讓給「連按兩次清空輸入」。priority 不能拿掉——
-    # 輸入框自己把 ctrl+w 綁成「刪掉左邊那個詞」，不搶在它之前就永遠輪不到這裡。
-    # 代價是輸入框裡少了那個刪詞鍵，退格與 ctrl+u（清到行首）還在。
+    # esc 是「退一層」：手上還有打好的字就先清掉那一格（連按兩次，一次是手滑），
+    # 沒有東西可清就退出這一筆的編輯。兩件事分得開，因為「有沒有字可以清」是
+    # 看得出來的（見 clearable），不必要求使用者記住兩顆不同的鍵。
+    #
+    # ctrl+w 留著做同一件取消，給已經按熟的手。priority 不能拿掉——輸入框自己把
+    # ctrl+w 綁成「刪掉左邊那個詞」，不搶在它之前就永遠輪不到這裡。代價是輸入框裡
+    # 少了那個刪詞鍵，退格與 ctrl+u（清到行首）還在。
     BINDINGS = [
         keys.hidden("ctrl+s", "request_commit", "儲存這筆"),
         keys.hidden("ctrl+w", "request_cancel", "取消（不儲存，回瀏覽）", priority=True),
-        keys.hidden("escape", "request_clear", "清空輸入（連按兩次）"),
+        keys.hidden("escape", "request_escape", "清空打好的字（連按兩次）；沒字可清就取消"),
     ]
 
     def __init__(self, **arguments) -> None:
@@ -175,6 +179,15 @@ class NotePrompt(Vertical):
     def clearable(self) -> bool:
         """有沒有東西可以清。選項題沒有輸入框，空的輸入框也沒有。"""
         return isinstance(self._answering, Input) and bool(self._answering.value)
+
+    @property
+    def touched(self) -> bool:
+        """正在答的那一格有沒有被動過。
+
+        輸入框一開始就放著預設值，所以「裡面有字」不等於「打過字」——問的是離開會不會
+        弄丟使用者自己打的東西，那要跟當初給的那一份比。
+        """
+        return isinstance(self._answering, Input) and self._answering.value != self._offered
 
     def clear_answer(self) -> None:
         if isinstance(self._answering, Input):
@@ -325,7 +338,13 @@ class NotePrompt(Vertical):
     def action_request_cancel(self) -> None:
         self.post_message(self.Cancelled())
 
-    def action_request_clear(self) -> None:
-        """沒有東西可以清就當作沒按——不掛一條「再按一次」然後什麼也不會發生。"""
+    def action_request_escape(self) -> None:
+        """esc 退一層：先清掉打好的字，沒字可清就退出這一筆。
+
+        清空要連按兩次（那一步在 app 上掛提示），取消不必——取消本來就會問過改動
+        要不要留。所以同一顆鍵按下去永遠有反應，不會有「按了沒事發生」的那一刻。
+        """
         if self.clearable:
             self.post_message(self.ClearRequested())
+            return
+        self.post_message(self.Cancelled())
