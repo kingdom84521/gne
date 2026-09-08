@@ -2,6 +2,7 @@
 
 from ..core.entity import NoteController
 from .app import GneApp
+from .setup import run_field_setup
 from .state import EditorState, seed_for
 
 
@@ -26,4 +27,4 @@ def run_editor(
     ).run()
 
 
-__all__ = ["EditorState", "GneApp", "run_editor", "seed_for"]
+__all__ = ["EditorState", "GneApp", "run_editor", "run_field_setup", "seed_for"]

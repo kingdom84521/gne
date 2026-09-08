@@ -15,6 +15,7 @@ from gne.tui.app import GneApp
 from gne.tui.screens import DefaultNoteScreen, FieldsScreen, RangeScreen
 from gne.tui.screens.confirm import ConfirmScreen
 from gne.tui.screens.fields import FieldFormScreen, draft_of
+from gne.tui.setup import FieldSetupApp
 
 from conftest import run_git
 
@@ -33,7 +34,7 @@ def declared_in_repo(git_repo, monkeypatch):
     monkeypatch.delenv(schema.SCHEMA_ENV, raising=False)
     target = git_repo / ".gne" / "note-schema.json"
     target.parent.mkdir(exist_ok=True)
-    target.write_text(schema.TEMPLATE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    target.write_text(schema.EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     schema.forget_schema()
     yield target
     schema.forget_schema()
@@ -229,14 +230,14 @@ async def test_dropping_a_field_rewrites_the_notes_that_carry_it(
 # --- 表單能表達的東西，不能少於宣告檔 ---
 
 
-@pytest.mark.parametrize("key", list(json.loads(schema.TEMPLATE_PATH.read_text("utf-8"))["properties"]))
+@pytest.mark.parametrize("key", list(json.loads(schema.EXAMPLE_PATH.read_text("utf-8"))["properties"]))
 def test_every_field_in_the_template_round_trips_through_the_form(key):
     """範本裡的每一欄都要能被表單讀進來、再原樣寫回去。
 
     這一條就是「UI 能做到宣告檔能做的全部」的機械式說法：表單少收一個關鍵字，
     帶著那個關鍵字的欄位就對不回去，這裡會紅。
     """
-    document = json.loads(schema.TEMPLATE_PATH.read_text(encoding="utf-8"))
+    document = json.loads(schema.EXAMPLE_PATH.read_text(encoding="utf-8"))
     declaration = document["properties"][key]
 
     draft = draft_of(key, declaration, key in document.get("required", []))
@@ -321,3 +322,39 @@ async def test_a_condition_naming_a_field_that_does_not_exist_is_refused(
         await pilot.pause()
 
         assert isinstance(app.screen, FieldsScreen), "留在欄位一覽上"
+
+
+# --- gne init 問出來的欄位 ---
+
+
+async def test_init_asks_and_produces_only_what_was_answered(git_repo, monkeypatch):
+    """init 不塞一份現成的欄位進來：畫面一開始是空的，有幾欄是問出來的。"""
+    monkeypatch.delenv(schema.SCHEMA_ENV, raising=False)
+    setup = FieldSetupApp()
+    async with setup.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        assert isinstance(setup.screen, FieldsScreen)
+
+        await pilot.press("a")
+        await pilot.pause()
+        setup.screen.query_one("#field-form-key", Input).value = "impact"
+        setup.screen.query_one("#field-form-title", Input).value = "影響"
+        setup.screen.query_one("#field-form-prompt", Input).value = "影響有多大。"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert setup.return_value is not None
+    assert list(setup.return_value.document["properties"]) == ["impact"]
+
+
+async def test_init_will_not_produce_a_declaration_with_no_fields(git_repo, monkeypatch):
+    monkeypatch.delenv(schema.SCHEMA_ENV, raising=False)
+    setup = FieldSetupApp()
+    async with setup.run_test(size=SIZE) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(setup.screen, FieldsScreen), "收不下，留在原地"

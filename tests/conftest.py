@@ -24,7 +24,7 @@ def declared_fields(monkeypatch):
 
     宣告是讀進來就快取的，換掉宣告檔的測試因此不能把快取留給下一個。
     """
-    monkeypatch.setenv(schema.SCHEMA_ENV, str(schema.TEMPLATE_PATH))
+    monkeypatch.setenv(schema.SCHEMA_ENV, str(schema.EXAMPLE_PATH))
     reset_schema_caches()
     yield
     reset_schema_caches()

@@ -347,5 +347,5 @@ def test_a_repo_without_a_declaration_says_so(git_repo, monkeypatch):
 
 
 def test_the_template_ships_with_the_package_and_is_a_valid_declaration():
-    assert schema.TEMPLATE_PATH.is_file()
-    assert schema.build_fields(schema.read_schema(schema.TEMPLATE_PATH))
+    assert schema.EXAMPLE_PATH.is_file()
+    assert schema.build_fields(schema.read_schema(schema.EXAMPLE_PATH))

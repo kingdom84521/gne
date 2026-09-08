@@ -18,6 +18,7 @@ DEFAULT_FETCH = True
 
 SUBCOMMANDS = (
     "init",
+    "order",
     "edit",
     "show",
     "list",
@@ -117,7 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
     exporter.add_argument("range", nargs="?", default=None)
     exporter.add_argument("-o", "--output", default=None)
 
-    subparsers.add_parser("init", help="在這個 repo 建立欄位宣告")
+    subparsers.add_parser("init", help="問幾題，建立這個 repo 的欄位宣告")
+
+    orderer = subparsers.add_parser("order", help="欄位的顯示順序")
+    orderer.add_argument(
+        "keys",
+        nargs="*",
+        metavar="KEY",
+        help="照這個順序重排。不給就印出現在的順序。",
+    )
 
     describer = subparsers.add_parser("schema", help="印出欄位宣告")
     describer.add_argument("--format", choices=("text", "json"), default="text")
@@ -249,16 +258,48 @@ def _run_export(controller: NoteController, options: argparse.Namespace) -> int:
     return 0
 
 
+def run_field_setup() -> object:
+    """延後匯入，讓沒有終端機的路徑不必載入 TUI。"""
+    from .tui import run_field_setup as ask
+
+    return ask()
+
+
 def _run_init(_: NoteController, __: argparse.Namespace) -> int:
-    """把範本複製成這個 repo 的宣告檔。已經有了就不動它。"""
+    """問出這個專案的欄位。
+
+    不複製一份現成的欄位進來：release note 要記什麼是各專案自己的事，塞一份別人的
+    欄位給你，最可能的結果是它就一直留在那裡。
+    """
     target = schema.schema_path()
     if target.exists():
         print(f"{target} 已經在了，沒有動它。", file=sys.stderr)
         return 0
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(schema.TEMPLATE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"已建立 {target}。改它就是改欄位，改完 gne schema 看得到。", file=sys.stderr)
+    if not interactive_possible():
+        raise render.InputError(
+            "gne init 會問你這個專案要記哪些欄位，需要終端機。\n"
+            f"要用現成的宣告就直接把檔案放到 {target}，或用 GNE_SCHEMA 指過去。"
+        )
+
+    plan = run_field_setup()
+    if plan is None:
+        print("沒有建立宣告檔。", file=sys.stderr)
+        return 1
+
+    written = schema.save_schema(plan.document)
+    print(f"已建立 {written}。之後改欄位用 gne edit 裡的 ctrl+f。", file=sys.stderr)
+    return 0
+
+
+def _run_order(_: NoteController, options: argparse.Namespace) -> int:
+    document = schema.load_schema()
+    if not options.keys:
+        print("\n".join(document["properties"]))
+        return 0
+
+    schema.save_schema(schema.reordered(document, options.keys))
+    print("已重排欄位順序。", file=sys.stderr)
     return 0
 
 
@@ -382,6 +423,7 @@ def _run_backup(controller: NoteController, options: argparse.Namespace) -> int:
 
 _HANDLERS = {
     "init": _run_init,
+    "order": _run_order,
     "edit": _run_edit,
     "show": _run_show,
     "list": _run_list,

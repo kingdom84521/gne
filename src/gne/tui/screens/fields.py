@@ -8,8 +8,9 @@ x-ignore-when 是什麼。對只設定一次的專案來說那是一次性的成
 而是一份計畫——新宣告加上「既有備註要跟著做什麼」，由呼叫端一起執行。
 """
 
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
 from typing import Any
 
 from textual.app import ComposeResult
@@ -23,6 +24,19 @@ from .confirm import ConfirmScreen
 from .dialog import BOX_CLASS, CLOSE_HINT, Dialog
 
 INPUT_KINDS = ("text", "multiline", "integer-list", "choice")
+
+KEY_COLUMN = 18
+TITLE_COLUMN = 12
+
+
+def display_width(text: str) -> int:
+    """一段文字在終端機上佔幾格。中文字佔兩格，所以不能拿字數當寬度。"""
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+
+
+def padded(text: str, width: int) -> str:
+    """補到 width 格寬。用 f-string 的 :<n 會拿字數當格數，中文標題就對不齊。"""
+    return text + " " * max(0, width - display_width(text))
 
 LIST_ID = "fields-list"
 ERROR_ID = "fields-error"
@@ -259,8 +273,10 @@ class FieldsScreen(Dialog[FieldPlan | None]):
         self,
         document: Mapping[str, Any],
         carrying: Callable[[str], int] = lambda _: 0,
+        explanation: str = "",
     ) -> None:
         super().__init__()
+        self._explanation = explanation
         self._document: dict[str, Any] = {
             **document,
             "properties": dict(document.get("properties", {})),
@@ -276,6 +292,8 @@ class FieldsScreen(Dialog[FieldPlan | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="fields-box", classes=BOX_CLASS):
             yield Label("欄位宣告", id="fields-title")
+            if self._explanation:
+                yield Label(self._explanation, classes="dialog-explanation")
             yield OptionList(id=LIST_ID)
             yield Label("", id=ERROR_ID, classes="dialog-error")
             yield Label(HINT, classes="dialog-hint")
@@ -297,13 +315,16 @@ class FieldsScreen(Dialog[FieldPlan | None]):
 
     def _row_of(self, key: str) -> str:
         declaration = self._document["properties"][key]
-        marks = "".join(
-            [
-                "*" if key in self._document["required"] else " ",
-                "人" if declaration.get("x-human-only") else " ",
-            ]
+        marks = padded(
+            ("*" if key in self._document["required"] else " ")
+            + ("人" if declaration.get("x-human-only") else " "),
+            4,
         )
-        return f"{marks} {key:<18} {declaration.get('title', key):<10} {declaration.get('x-input', '')}"
+        return (
+            f"{marks}{padded(key, KEY_COLUMN)}"
+            f"{padded(declaration.get('title', key), TITLE_COLUMN)}"
+            f"{declaration.get('x-input', '')}"
+        )
 
     @property
     def _selected(self) -> str | None:

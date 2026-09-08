@@ -33,7 +33,7 @@ def _reset_caches() -> None:
 
 @pytest.fixture
 def declared_trial_field(tmp_path, monkeypatch):
-    document = json.loads(schema.TEMPLATE_PATH.read_text(encoding="utf-8"))
+    document = json.loads(schema.EXAMPLE_PATH.read_text(encoding="utf-8"))
     document["properties"][TRIAL_KEY] = TRIAL_DECLARATION
     path = tmp_path / "note-schema.json"
     path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")

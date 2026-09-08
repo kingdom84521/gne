@@ -4,7 +4,8 @@ import pytest
 
 from conftest import run_git
 from gne import cli
-from gne.core import git
+from gne.core import git, schema
+from gne.tui.screens.fields import FieldPlan
 
 
 @pytest.fixture
@@ -582,12 +583,41 @@ def test_the_sync_notice_reaches_stderr_without_failing_the_command(
 # --- init：宣告檔從範本長出來 ---
 
 
-def test_init_writes_the_template_into_the_repo(git_repo, no_remote, monkeypatch):
+def test_init_writes_what_the_questions_produced(git_repo, no_remote, monkeypatch):
+    """init 寫下的是問出來的欄位，不是一份現成的。"""
     monkeypatch.delenv("GNE_SCHEMA", raising=False)
+
+    answered = {
+        **schema.blank_declaration(),
+        "properties": {
+            "note": {"title": "備註", "type": "string", "x-prompt": "隨便寫。", "x-input": "text"}
+        },
+    }
+    monkeypatch.setattr(cli, "interactive_possible", lambda: True)
+    monkeypatch.setattr(cli, "run_field_setup", lambda: FieldPlan(document=answered))
+
     run("init")
+
     declaration = git_repo / ".gne" / "note-schema.json"
-    assert declaration.is_file()
-    assert json.loads(declaration.read_text(encoding="utf-8"))["properties"]
+    assert list(json.loads(declaration.read_text(encoding="utf-8"))["properties"]) == ["note"]
+
+
+def test_init_needs_a_terminal_because_it_asks(git_repo, no_remote, monkeypatch, capsys):
+    monkeypatch.delenv("GNE_SCHEMA", raising=False)
+    monkeypatch.setattr(cli, "interactive_possible", lambda: False)
+    assert cli.main(["init"]) != 0
+    assert "需要終端機" in capsys.readouterr().err
+
+
+def test_init_leaves_nothing_behind_when_the_questions_are_abandoned(
+    git_repo, no_remote, monkeypatch
+):
+    monkeypatch.delenv("GNE_SCHEMA", raising=False)
+    monkeypatch.setattr(cli, "interactive_possible", lambda: True)
+    monkeypatch.setattr(cli, "run_field_setup", lambda: None)
+
+    assert cli.main(["init"]) != 0
+    assert not (git_repo / ".gne" / "note-schema.json").exists()
 
 
 MINIMAL_DECLARATION = json.dumps(
@@ -642,3 +672,38 @@ def test_without_a_range_and_without_a_memory_it_says_so(git_repo, commit, no_re
     commit()
     run("list", expect=1)
     assert "沒有指定區間" in capsys.readouterr().err
+
+
+# --- order：欄位的顯示順序 ---
+
+
+def test_order_prints_the_current_order(git_repo, commit, no_remote, capsys):
+    commit()
+    run("order")
+    assert capsys.readouterr().out.split() == [field.key for field in schema.note_fields()]
+
+
+def test_order_rearranges_the_declaration(git_repo, commit, no_remote, monkeypatch, tmp_path):
+    """順序就是顯示順序，所以重排是改宣告檔，不是改畫面。"""
+    commit()
+    declaration = tmp_path / "note-schema.json"
+    declaration.write_text(schema.EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv(schema.SCHEMA_ENV, str(declaration))
+    schema.forget_schema()
+
+    run("order", "redmine_ids", "type", "change_log", "spec_change", "data_migration")
+
+    assert list(json.loads(declaration.read_text(encoding="utf-8"))["properties"]) == [
+        "redmine_ids",
+        "type",
+        "change_log",
+        "spec_change",
+        "data_migration",
+    ]
+
+
+def test_order_refuses_a_partial_list(git_repo, commit, no_remote, capsys):
+    """漏掉的欄位不是「排在後面」，是會消失——所以要列齊。"""
+    commit()
+    assert cli.main(["order", "type"]) != 0
+    assert "剛好一次" in capsys.readouterr().err

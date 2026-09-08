@@ -1,8 +1,8 @@
 """載入欄位宣告，並衍生出各處需要的對照表。
 
 宣告檔屬於被標註的那個 repo，不屬於 gne：release note 要記哪些欄位是專案自己的事，
-一個工具沒有立場替所有人決定。所以它放在 repo 的 .gne/ 底下，套件裡那一份只是
-gne init 用的範本。
+一個工具沒有立場替所有人決定。所以它放在 repo 的 .gne/ 底下；套件裡附的那一份只是
+一個看得到 x-* 怎麼寫的例子，gne 自己不讀它，`gne init` 也不複製它。
 
 欄位的唯一來源是宣告檔。標準 JSON Schema 關鍵字由 jsonschema 驗證，
 x-* 擴充關鍵字由 pydantic 驗證——JSON Schema 規格要求驗證器忽略未知關鍵字，
@@ -26,7 +26,7 @@ from .types import NoteDocument
 
 SCHEMA_ENV = "GNE_SCHEMA"
 SCHEMA_RELATIVE = Path(".gne/note-schema.json")
-TEMPLATE_PATH = Path(__file__).resolve().parent / "note-schema.json"
+EXAMPLE_PATH = Path(__file__).resolve().parent / "note-schema.json"
 
 type InputKind = Literal["text", "multiline", "integer-list", "choice"]
 
@@ -125,7 +125,7 @@ def schema_path() -> Path:
     """這個 repo 的欄位宣告在哪。
 
     `GNE_SCHEMA` 指定路徑，就像 `GNE_ADVISOR` 指定顧問；沒設就找 repo 的
-    .gne/note-schema.json。套件裡的範本不當預設值——真的拿它當預設，等於讓每個人的
+    .gne/note-schema.json。套件裡附的例子不當預設值——真的拿它當預設，等於讓每個人的
     release note 都長成別人專案的樣子。
     """
     override = os.environ.get(SCHEMA_ENV, "").strip()
@@ -148,6 +148,50 @@ def load_schema() -> Mapping[str, Any]:
         raise SchemaDeclarationError(f"{path} 不是合法的 JSON：{error}") from error
     except SchemaError as error:
         raise SchemaDeclarationError(f"{path} 不是合法的 JSON Schema：{error.message}") from error
+
+
+BLANK_TITLE = "git note"
+BLANK_DESCRIPTION = (
+    "掛在 commit 上的 release note 欄位定義。這份宣告是欄位的唯一來源："
+    "驗證規則、TUI 問答、CLI 旗標、純文字與 JSON 輸出、xlsx 表頭全部由它衍生。"
+    "properties 的出現順序即顯示順序。"
+)
+
+
+def blank_declaration() -> dict[str, Any]:
+    """一份還沒有任何欄位的宣告。gne init 從這裡開始問。"""
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": BLANK_TITLE,
+        "description": BLANK_DESCRIPTION,
+        "type": "object",
+        "additionalProperties": False,
+        "required": [],
+        "properties": {},
+    }
+
+
+def reordered(document: Mapping[str, Any], order: Sequence[str]) -> dict[str, Any]:
+    """照 order 重排 properties。
+
+    order 必須恰好是現有的欄位——少一個就是有欄位會消失，多一個就是憑空多出一欄，
+    兩種都不是「排序」。所以這裡不接受部分清單，讓呼叫端把話講清楚。
+    """
+    properties = document.get("properties", {})
+    wanted, present = list(order), list(properties)
+
+    missing = [key for key in present if key not in wanted]
+    unknown = [key for key in wanted if key not in properties]
+    if missing or unknown:
+        raise SchemaDeclarationError(
+            "排序要列出現有的每一個欄位，剛好一次。"
+            + (f"漏了：{'、'.join(missing)}。" if missing else "")
+            + (f"沒有這些欄位：{'、'.join(unknown)}。" if unknown else "")
+        )
+    if len(wanted) != len(set(wanted)):
+        raise SchemaDeclarationError("同一個欄位不能出現兩次。")
+
+    return {**document, "properties": {key: properties[key] for key in wanted}}
 
 
 def forget_schema() -> None:

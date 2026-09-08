@@ -6,7 +6,7 @@
 ## 兩種用法
 
 ```sh
-gne init                # 在這個 repo 建立欄位宣告（第一次才要）
+gne init                # 問出這個 repo 的欄位（第一次才要）
 gne v1.2.0...HEAD       # 開編輯器，列出這個區間裡自己還沒填的 commit
 gne                     # 同上，沿用上一次用過的區間
 gne list --format json  # 不進畫面，把資料倒出來
@@ -125,7 +125,8 @@ gne list --format json  # 不進畫面，把資料倒出來
 | `gne show [<commit>] [--format text\|yaml\|json]` | 印出單一 commit 的備註 |
 | `gne list [<range>] [--filter all\|noted\|unnoted\|ai-generated] [--format text\|json]` | 列出區間內的 commit 與備註 |
 | `gne export [<range>] [-o <path>]` | 匯出 xlsx，預設檔名 `<branch>.xlsx` |
-| `gne init` | 從範本建立 `.gne/note-schema.json`，已經有就不動它 |
+| `gne init` | 問出這個專案的欄位，寫成 `.gne/note-schema.json`，已經有就不動它 |
+| `gne order [<key>…]` | 印出或重排欄位的顯示順序 |
 | `gne schema [--format text\|json]` | 印出欄位宣告 |
 | `gne set [<commit>] --<field> <value>…` | 逐欄寫入，未給的欄位保留原值 |
 | `gne set [<commit>] --from-stdin [--format yaml\|json]` | 從 stdin 覆寫整份備註 |
@@ -169,6 +170,15 @@ gne list --format json  # 不進畫面，把資料倒出來
 - `x-human-only`：這個欄位只能由人填。AI 寫入時碰到它會被擋下來，不是靠 `x-prompt` 拜託。
 - `x-ignore-when`：別的欄位變成什麼值時，這一欄就不必問了。
 - `x-follow-convention`：commit 前綴對得上可選值時就用它（只有 `choice` 欄位用得上）。
+
+順序就是 `properties` 的順序，要重排用 `gne order`——列出現有的每一個欄位，剛好一次：
+
+```sh
+gne order                                          # 現在的順序
+gne order type change_log redmine_ids spec_change  # 排成這樣
+```
+
+漏掉的欄位不是「排在後面」而是會消失，所以部分清單會被擋下來。
 
 `Ctrl+F` 的表單收得下上面每一個關鍵字：成對的東西（可選值對標籤、欄位對值）寫成
 `feat=功能, fix=錯誤` 與 `type=skip`，一格搞定。所以**畫面上做得到的事不比改檔案少**——
@@ -286,7 +296,7 @@ gne/
     render.py           note → 文字 / YAML / JSON
     export.py           note → xlsx
     core/               欄位宣告、備註讀寫、git 存取
-      note-schema.json  gne init 用的範本；真正生效的那一份在 repo 的 .gne/ 底下
+      note-schema.json  範例，給人看 x-* 怎麼寫；生效的那一份在被標註的 repo 的 .gne/ 底下
       schema.py  provenance.py  entity.py  git.py  types.py
   tests/
 ```
@@ -311,8 +321,24 @@ PYTHONPATH=src lint-imports   # 2 kept, 0 broken
 ./install_dev_env.sh          # 建 .venv，以 editable 模式裝進去
 ```
 
-裝完在要標註的那個 repo 裡跑一次 `gne init`，把範本複製成 `.gne/note-schema.json`，
-改它就是改欄位。那個檔要 commit——欄位是整個專案共用的約定。
+裝完在要標註的那個 repo 裡跑一次 `gne init`。它不塞一份現成的欄位給你——開一個空的
+欄位一覽問你要記什麼，用的是跟 `Ctrl+F` 一樣的表單：
+
+```
+  欄位宣告
+
+  這個專案的 release note 要記哪些欄位？按 a 一欄一欄加，加完 ctrl+s
+  寫入。
+  之後要改，用 gne 裡的 ctrl+f，同一張表單。
+
+  ┌──────────────────────────────────────────────────────────┐
+  └──────────────────────────────────────────────────────────┘
+
+  a 新增 ｜ e 修改 ｜ d 刪除 ｜ ctrl+s 儲存；Esc 關閉，或點對話框外面
+```
+
+寫出來的 `.gne/note-schema.json` 要 commit——欄位是整個專案共用的約定。
+`src/gne/core/note-schema.json` 是一個看得到 `x-*` 怎麼寫的例子，gne 自己不讀它。
 
 相依來自 [pyproject.toml](pyproject.toml)，裝完就有 `gne` 指令。要裝進現成的環境就直接
 `pip install -e ".[test]"`。
