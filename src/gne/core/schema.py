@@ -142,7 +142,7 @@ def load_schema() -> Mapping[str, Any]:
     except FileNotFoundError as error:
         raise SchemaNotDeclared(
             f"找不到欄位宣告 {path}。\n"
-            "跑 gne init 從範本建一份，或用 GNE_SCHEMA 指到既有的那一份。"
+            "跑 gne init 問出這個 repo 要記哪些欄位，或用 GNE_SCHEMA 指到既有的那一份。"
         ) from error
     except json.JSONDecodeError as error:
         raise SchemaDeclarationError(f"{path} 不是合法的 JSON：{error}") from error
