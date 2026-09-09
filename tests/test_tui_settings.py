@@ -325,7 +325,7 @@ async def test_a_condition_naming_a_field_that_does_not_exist_is_refused(
         assert isinstance(app.screen, FieldsScreen), "留在欄位一覽上"
 
 
-# --- gne init 問出來的欄位 ---
+# --- gne schema init 問出來的欄位 ---
 
 
 async def test_init_asks_and_produces_only_what_was_answered(git_repo, monkeypatch):

@@ -5,7 +5,7 @@
 預設值全部從宣告檔衍生，增修欄位不必動這裡。
 
 「這一格有沒有被動過」是刻意記下來的：多行的舊值在單行輸入框裡呈現不了，直接 Enter
-就原樣保留，不會被壓成一行。真的要寫多行的內容走 `gne set --from-stdin`。
+就原樣保留，不會被壓成一行。真的要寫多行的內容走 `gne note set --from-stdin`。
 """
 
 from collections.abc import Mapping

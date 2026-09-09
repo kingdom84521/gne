@@ -660,7 +660,7 @@ def test_a_repo_without_a_declaration_is_told_what_to_run(git_repo, commit, no_r
     commit()
     monkeypatch.delenv("GNE_SCHEMA", raising=False)
     run("schema", "show", expect=1)
-    assert "gne init" in capsys.readouterr().err
+    assert "gne schema init" in capsys.readouterr().err
 
 
 # --- 區間：給過一次就不必再講 ---

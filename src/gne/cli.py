@@ -50,10 +50,10 @@ HEADLESS_ADVICE = (
 
 
 def _declared_fields() -> tuple[schema.NoteField, ...]:
-    """gne set 的旗標由宣告檔衍生，但組 parser 不能要求宣告檔已經存在。
+    """gne note set 的旗標由宣告檔衍生，但組 parser 不能要求宣告檔已經存在。
 
-    還沒 gne init 的 repo、根本不在 repo 裡的 cwd——這兩種情況下 gne --help 與
-    gne init 都還是要能用。真的需要欄位的子命令會在執行時拿到該有的錯誤訊息。
+    還沒 gne schema init 的 repo、根本不在 repo 裡的 cwd——這兩種情況下 gne --help
+    與 gne schema init 都還是要能用。真的需要欄位的子命令會在執行時拿到該有的錯誤訊息。
     """
     try:
         return schema.note_fields()
@@ -469,7 +469,7 @@ def _run_init(_: NoteController, __: argparse.Namespace) -> int:
 
     if not interactive_possible():
         raise render.InputError(
-            "gne init 會問你這個專案要記哪些欄位，需要終端機。\n"
+            "gne schema init 會問你這個專案要記哪些欄位，需要終端機。\n"
             f"要用現成的宣告就直接把檔案放到 {target}，或用 GNE_SCHEMA 指過去。"
         )
 
@@ -479,7 +479,7 @@ def _run_init(_: NoteController, __: argparse.Namespace) -> int:
         return 1
 
     written = schema.save_schema(plan.document)
-    print(f"已建立 {written}。之後改欄位用 gne edit 裡的 ctrl+f。", file=sys.stderr)
+    print(f"已建立 {written}。之後改欄位用 gne 裡的 ctrl+f，或 gne schema add/edit。", file=sys.stderr)
     return 0
 
 
@@ -630,7 +630,7 @@ def _run_set(controller: NoteController, options: argparse.Namespace) -> int:
         raise render.InputError("--from-stdin 會覆寫整份備註，不能同時指定個別欄位旗標。")
     if not options.from_stdin and not given:
         raise render.InputError(
-            "沒有指定任何欄位。用個別旗標（見 gne schema）或 --from-stdin 提供內容。"
+            "沒有指定任何欄位。用個別旗標（見 gne schema show）或 --from-stdin 提供內容。"
         )
 
     if options.from_stdin:
@@ -691,7 +691,7 @@ def _run_prune(controller: NoteController, options: argparse.Namespace) -> int:
 
     if options.apply and not options.yes:
         print(
-            "prune --apply 會刪除備註。確認已經跑過 gne backup 並留下 refs/notes 備份後，"
+            "prune --apply 會刪除備註。確認已經跑過 gne note backup 並留下 refs/notes 備份後，"
             "再加上 --yes 執行。",
             file=sys.stderr,
         )

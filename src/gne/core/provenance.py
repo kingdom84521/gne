@@ -9,7 +9,7 @@
 整份備註，不是逐欄核對。
 
 記號在人工寫入時消失，不必另外下指令清除：TUI 的表單依欄位重建整份備註，
-`gne set` 沒帶 --ai-generated 就是人在寫。審閱過的備註因此與人工填的備註沒有兩樣。
+`gne note set` 沒帶 --ai-generated 就是人在寫。審閱過的備註因此與人工填的備註沒有兩樣。
 """
 
 from collections.abc import Iterable

@@ -236,7 +236,7 @@ class NoteController:
             raise NoteSyncError("push", remote, error) from error
 
     def _push_if_automatic(self) -> None:
-        """沒有 remote 時「自動推送」沒有對象，不是失敗。明確的 gne push 才會報錯。"""
+        """沒有 remote 時「自動推送」沒有對象，不是失敗。明確的 gne note push 才會報錯。"""
         if self._push_enabled and self._remote() is not None:
             self.push()
 

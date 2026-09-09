@@ -2,7 +2,7 @@
 
 宣告檔屬於被標註的那個 repo，不屬於 gne：release note 要記哪些欄位是專案自己的事，
 一個工具沒有立場替所有人決定。所以它放在 repo 的 .gne/ 底下；套件裡附的那一份只是
-一個看得到 x-* 怎麼寫的例子，gne 自己不讀它，`gne init` 也不複製它。
+一個看得到 x-* 怎麼寫的例子，gne 自己不讀它，`gne schema init` 也不複製它。
 
 欄位的唯一來源是宣告檔。標準 JSON Schema 關鍵字由 jsonschema 驗證，
 x-* 擴充關鍵字由 pydantic 驗證——JSON Schema 規格要求驗證器忽略未知關鍵字，
@@ -142,7 +142,7 @@ def load_schema() -> Mapping[str, Any]:
     except FileNotFoundError as error:
         raise SchemaNotDeclared(
             f"找不到欄位宣告 {path}。\n"
-            "跑 gne init 問出這個 repo 要記哪些欄位，或用 GNE_SCHEMA 指到既有的那一份。"
+            "跑 gne schema init 問出這個 repo 要記哪些欄位，或用 GNE_SCHEMA 指到既有的那一份。"
         ) from error
     except json.JSONDecodeError as error:
         raise SchemaDeclarationError(f"{path} 不是合法的 JSON：{error}") from error
@@ -159,7 +159,7 @@ BLANK_DESCRIPTION = (
 
 
 def blank_declaration() -> dict[str, Any]:
-    """一份還沒有任何欄位的宣告。gne init 從這裡開始問。"""
+    """一份還沒有任何欄位的宣告。gne schema init 從這裡開始問。"""
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": BLANK_TITLE,

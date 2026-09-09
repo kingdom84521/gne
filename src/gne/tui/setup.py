@@ -1,4 +1,4 @@
-"""gne init 的問答。
+"""gne schema init 的問答。
 
 第一次在一個 repo 用 gne，要先講出這個專案的 release note 要記哪些欄位。那件事沒有
 通用答案，所以 init 不塞一份別人的欄位給你——它開這個畫面問你，用的是跟 `Ctrl+F`
@@ -16,7 +16,7 @@ class FieldSetupApp(App[FieldPlan | None]):
     """只有欄位一覽的畫面。收下的是一份計畫，寫檔由呼叫端做。"""
 
     CSS_PATH = "gne.tcss"
-    TITLE = "gne init"
+    TITLE = "gne schema init"
     ENABLE_COMMAND_PALETTE = False
 
     EXPLANATION = (
